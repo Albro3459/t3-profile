@@ -76,16 +76,22 @@ import {
   printSynced,
   printSyncSummary,
 } from "./output.mjs";
+import { collectUsage, displayTimezone } from "./usage.mjs";
+import { TESTED_PLATFORM, TESTED_PROVIDER_VERSIONS } from "./support.mjs";
 
 function requirePositional(command, values, expected) {
   if (values.length !== expected) {
-    throw error(`Invalid arguments for '${command}'.`, `Use 't3-profile --help' for usage.`);
+    throw error(`Invalid arguments for '${command}'.`, `Use 't3-profile help' for usage.`);
   }
 }
 
 export function parseArguments(argv) {
-  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") return { command: "help" };
-  if (argv[0] === "--version" || argv[0] === "-v") return { command: "version" };
+  if (argv.length === 0 || argv[0] === "help" || argv[0] === "--help" || argv[0] === "-h") {
+    return { command: "help" };
+  }
+  if (argv[0] === "version" || argv[0] === "--version" || argv[0] === "-v") {
+    return { command: "version" };
+  }
   const [command, ...rest] = argv;
   if (command === "list") {
     requirePositional(command, rest, 0);
@@ -103,7 +109,7 @@ export function parseArguments(argv) {
     for (const value of rest) {
       if (value === "--dry-run") dryRun = true;
       else if (value === "--yes") yes = true;
-      else throw error(`Unknown option '${value}'.`, "Use 't3-profile --help' for usage.");
+      else throw error(`Unknown option '${value}'.`, "Use 't3-profile help' for usage.");
     }
     return { command, dryRun, yes };
   }
@@ -112,7 +118,7 @@ export function parseArguments(argv) {
     let yes = false;
     for (const value of rest) {
       if (value === "--yes") yes = true;
-      else if (value.startsWith("-")) throw error(`Unknown option '${value}'.`, "Use 't3-profile --help' for usage.");
+      else if (value.startsWith("-")) throw error(`Unknown option '${value}'.`, "Use 't3-profile help' for usage.");
       else positional.push(value);
     }
     requirePositional(command, positional, 2);
@@ -129,7 +135,7 @@ export function parseArguments(argv) {
     requirePositional(command, before, 2);
     return { command, provider: before[0], name: before[1], providerArguments };
   }
-  if (command !== "add") throw error(`Unknown command '${command}'.`, "Use 't3-profile --help' for usage.");
+  if (command !== "add") throw error(`Unknown command '${command}'.`, "Use 't3-profile help' for usage.");
 
   const positional = [];
   let home;
@@ -164,7 +170,7 @@ export function parseArguments(argv) {
       home = value.slice("--home=".length);
       continue;
     }
-    if (value.startsWith("-")) throw error(`Unknown option '${value}'.`, "Use 't3-profile --help' for usage.");
+    if (value.startsWith("-")) throw error(`Unknown option '${value}'.`, "Use 't3-profile help' for usage.");
     positional.push(value);
   }
   requirePositional(command, positional, 2);
@@ -760,7 +766,18 @@ async function runCommand(options) {
 async function listCommand() {
   const managedRoot = await resolveManagedRoot();
   const registry = await readRegistry(path.join(managedRoot, "profiles.json"));
-  printList(registry.profiles.map((profile) => ({ ...profile, profileHome: displayPath(profile.profileHome) })));
+  if (registry.profiles.length === 0) {
+    printList([]);
+    return;
+  }
+  const timezone = displayTimezone();
+  const usage = await collectUsage(registry.profiles, managedRoot, timezone);
+  printList(registry.profiles.map((profile, index) => ({
+    ...profile,
+    profileHome: displayPath(profile.profileHome),
+    usage: usage[index],
+    displayTimezone: timezone,
+  })));
 }
 
 function desiredInstance(profile) {
@@ -1200,8 +1217,8 @@ function diagnostic(results, level, label, message) {
 }
 
 async function diagnosePlatform(results) {
-  if (process.platform !== "darwin" || process.arch !== "arm64") {
-    diagnostic(results, "warn", "platform", `${process.platform} ${process.arch} is untested; only macOS 26.5 on ARM is tested.`);
+  if (process.platform !== TESTED_PLATFORM.os || process.arch !== TESTED_PLATFORM.arch) {
+    diagnostic(results, "warn", "platform", `${process.platform} ${process.arch} is untested; only ${TESTED_PLATFORM.label} is tested.`);
     return;
   }
   const version = await inspectCommand("sw_vers", ["-productVersion"]);
@@ -1216,9 +1233,9 @@ async function diagnosePlatform(results) {
   const productVersion = version.found && version.code === 0 ? version.stdout.trim() : "unknown macOS version";
   diagnostic(
     results,
-    productVersion === "26.5" ? "pass" : "warn",
+    productVersion === TESTED_PLATFORM.version ? "pass" : "warn",
     "platform",
-    productVersion === "26.5" ? "macOS 26.5 on ARM is tested." : `${productVersion} on ARM is untested; macOS 26.5 is tested.`,
+    productVersion === TESTED_PLATFORM.version ? `${TESTED_PLATFORM.label} is tested.` : `${productVersion} on ARM is untested; ${TESTED_PLATFORM.label} is tested.`,
   );
 }
 
@@ -1239,12 +1256,12 @@ async function diagnoseProvider(results, profile) {
   }
   if (!version.timedOut) {
     const versionText = `${version.stdout}\n${version.stderr}`.match(/\d+\.\d+\.\d+/)?.[0] ?? "unknown";
-    if (profile.provider === "claude" && versionText === "2.1.235") {
-      diagnostic(results, "pass", `${label} version`, "Claude Code 2.1.235 is tested.");
-    } else if (profile.provider === "claude") {
-      diagnostic(results, "warn", `${label} version`, `Claude Code ${versionText} is untested; 2.1.235 is tested.`);
+    const testedVersion = TESTED_PROVIDER_VERSIONS[profile.provider];
+    const providerLabel = profile.provider === "claude" ? "Claude Code" : "Codex";
+    if (versionText === testedVersion) {
+      diagnostic(results, "pass", `${label} version`, `${providerLabel} ${testedVersion} is tested.`);
     } else {
-      diagnostic(results, "warn", `${label} version`, `Codex ${versionText} is untested.`);
+      diagnostic(results, "warn", `${label} version`, `${providerLabel} ${versionText} is untested; ${testedVersion} is tested.`);
     }
   }
   const auth = await inspectCommand(
@@ -1385,5 +1402,5 @@ export async function dispatch(options) {
   if (options.command === "sync") return syncCommand(options);
   if (options.command === "doctor") return doctorCommand(options);
   if (options.command === "remove") return removeCommand(options);
-  throw error(`Unknown command '${options.command}'.`, "Use 't3-profile --help' for usage.");
+  throw error(`Unknown command '${options.command}'.`, "Use 't3-profile help' for usage.");
 }

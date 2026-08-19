@@ -4,8 +4,9 @@ import { error } from "./errors.mjs";
 
 /** Maximum time for local provider version and authentication-status probes (5 seconds by default). */
 export const INSPECT_COMMAND_TIMEOUT_MS = 5_000;
-const INSPECT_COMMAND_TERMINATION_GRACE_MS = 250;
-const INSPECT_COMMAND_FORCE_GRACE_MS = 250;
+export const INSPECT_COMMAND_TERMINATION_GRACE_MS = 250;
+export const INSPECT_COMMAND_FORCE_GRACE_MS = 250;
+export const INSPECT_COMMAND_MAX_OUTPUT_BYTES = 65_536;
 
 export function runProvider(binary, argumentsToPass, environment) {
   return new Promise((resolve, reject) => {
@@ -32,19 +33,22 @@ export function inspectCommand(
   timeoutMs = INSPECT_COMMAND_TIMEOUT_MS,
 ) {
   return new Promise((resolve) => {
-    const child = spawn(binary, argumentsToPass, {
-      env: environment,
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: false,
-    });
+    let child;
     let stdout = "";
     let stderr = "";
     let settled = false;
     let timedOut = false;
+    let outputExceeded = false;
+    let terminationRequested = false;
     let timeout;
     let terminationGrace;
     let forceGrace;
-    const append = (current, chunk) => `${current}${chunk}`.slice(0, 65_536);
+    const append = (current, chunk, currentBytes) => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      const available = Math.max(0, INSPECT_COMMAND_MAX_OUTPUT_BYTES - currentBytes);
+      if (bytes.byteLength > available) outputExceeded = true;
+      return `${current}${bytes.subarray(0, available).toString("utf8")}`;
+    };
     const clearTimers = () => {
       clearTimeout(timeout);
       clearTimeout(terminationGrace);
@@ -59,29 +63,24 @@ export function inspectCommand(
       clearTimers();
       resolve(result);
     };
-    const finishTimeout = () => {
+    const finishAfterForceGrace = () => {
       if (settled) return;
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // The child may already have exited between the close and kill paths.
-      }
-      child.stdout?.destroy();
-      child.stderr?.destroy();
-      finish({ found: true, code: 1, stdout, stderr, timedOut: true });
+      child?.stdout?.destroy();
+      child?.stderr?.destroy();
+      finish({ found: true, code: 1, stdout, stderr, timedOut });
     };
     const forceTerminate = () => {
       if (settled) return;
       try {
         child.kill("SIGKILL");
       } catch {
-        // The final deadline still guarantees a bounded result.
+        // The child may already have exited between termination signals.
       }
-      forceGrace = setTimeout(finishTimeout, INSPECT_COMMAND_FORCE_GRACE_MS);
+      forceGrace = setTimeout(finishAfterForceGrace, INSPECT_COMMAND_FORCE_GRACE_MS);
     };
-    const beginTimeout = () => {
-      if (settled) return;
-      timedOut = true;
+    const beginTermination = () => {
+      if (settled || terminationRequested) return;
+      terminationRequested = true;
       try {
         child.kill();
       } catch {
@@ -89,26 +88,56 @@ export function inspectCommand(
       }
       terminationGrace = setTimeout(forceTerminate, INSPECT_COMMAND_TERMINATION_GRACE_MS);
     };
-    child.stdout.on("data", (chunk) => {
+    const finishTimeout = () => {
       if (settled) return;
-      stdout = append(stdout, chunk);
-    });
-    child.stderr.on("data", (chunk) => {
-      if (settled) return;
-      stderr = append(stderr, chunk);
-    });
-    child.stdout.on("error", () => {});
-    child.stderr.on("error", () => {});
-    child.on("error", (cause) => {
-      if (timedOut) {
-        finish({ found: true, code: 1, stdout, stderr, timedOut: true });
-        return;
-      }
-      finish({ found: cause?.code !== "ENOENT", code: 1, stdout, stderr, timedOut: false });
-    });
-    child.on("close", (code, signal) => {
-      finish({ found: true, code: signal ? 1 : code ?? 1, stdout, stderr, timedOut });
-    });
-    timeout = setTimeout(beginTimeout, timeoutMs);
+      timedOut = true;
+      beginTermination();
+    };
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+
+    try {
+      child = spawn(binary, argumentsToPass, {
+        env: environment,
+        stdio: ["ignore", "pipe", "pipe"],
+        shell: false,
+      });
+      child.stdout.on("data", (chunk) => {
+        if (settled) return;
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+        stdout = append(stdout, bytes, stdoutBytes);
+        stdoutBytes += bytes.byteLength;
+        if (outputExceeded) beginTermination();
+      });
+      child.stderr.on("data", (chunk) => {
+        if (settled) return;
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+        stderr = append(stderr, bytes, stderrBytes);
+        stderrBytes += bytes.byteLength;
+        if (outputExceeded) beginTermination();
+      });
+      child.stdout.on("error", () => beginTermination());
+      child.stderr.on("error", () => beginTermination());
+      child.on("error", (cause) => {
+        if (cause?.code === "ENOENT") {
+          finish({ found: false, code: 1, stdout, stderr, timedOut: false });
+          return;
+        }
+        beginTermination();
+      });
+      child.on("close", (code, signal) => {
+        finish({
+          found: true,
+          code: outputExceeded || timedOut || signal ? 1 : code ?? 1,
+          stdout,
+          stderr,
+          timedOut,
+        });
+      });
+      timeout = setTimeout(finishTimeout, timeoutMs);
+      if (settled) clearTimeout(timeout);
+    } catch {
+      finish({ found: false, code: 1, stdout, stderr, timedOut: false });
+    }
   });
 }

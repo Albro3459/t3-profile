@@ -1,4 +1,5 @@
 import { VERSION } from "./version.mjs";
+import { formatResetTime } from "./usage.mjs";
 
 const useColor = Boolean(process.stdout.isTTY && !process.env.NO_COLOR);
 
@@ -18,6 +19,8 @@ export function printHelp() {
   writeLine(`t3-profile ${VERSION}
 
 Usage:
+  t3-profile help
+  t3-profile version
   t3-profile add <claude|codex> <name> [--home <path>] [--isolated] [--skip-auth] [--yes]
   t3-profile auth <claude|codex> <name>
   t3-profile run <claude|codex> <name> [-- provider arguments]
@@ -35,9 +38,11 @@ Options:
   --dry-run      Show the changes sync would make without writing them.
   --yes          For add, select standard sharing. For add, sync, or remove,
                  assert that T3 is stopped and accept the command's other
-                 confirmations; validation and drift checks still run.
-  --help         Show this help.
-  --version      Show the version.
+                 confirmations. Validation and drift checks still run.
+  help, --help, -h
+                 Show this help.
+  version, --version, -v
+                 Show the version.
 
 Confirmation behavior:
   add prompts after the creation/sharing summary and before mutation.
@@ -47,7 +52,7 @@ Confirmation behavior:
   T3 is fully stopped and ready to update? [y/N]
   sync --dry-run and synchronized sync no-ops, read-only list and doctor, and
   provider-only auth and run do not show the stopped-T3 prompt or require T3
-  to be stopped. Declining any shown confirmation prevents mutation; declining
+  to be stopped. Declining any shown confirmation prevents mutation. Declining
   remove's destructive consent does not continue to the stopped-T3 prompt.
   Native provider CLIs may still prompt natively.`);
 }
@@ -187,9 +192,44 @@ export function printList(profiles) {
   const rows = profiles
     .slice()
     .sort((left, right) => `${left.provider}:${left.name}`.localeCompare(`${right.provider}:${right.name}`))
-    .map((profile) => [profile.provider, profile.name, profile.sharing, profile.profileHome]);
-  const headings = ["PROVIDER", "NAME", "SHARING", "HOME"];
-  const widths = headings.map((heading, index) => Math.max(heading.length, ...rows.map((row) => row[index].length)));
-  writeLine(headings.map((heading, index) => paint("1", heading.padEnd(widths[index]))).join("  "));
-  for (const row of rows) writeLine(row.map((value, index) => value.padEnd(widths[index])).join("  "));
+    .map((profile) => ({
+      values: [profile.provider, profile.name, profile.sharing, profile.profileHome],
+      usage: renderUsage(profile.usage, profile.displayTimezone),
+    }));
+  const headings = ["PROVIDER", "NAME", "SHARING", "HOME", "USAGE"];
+  const widths = headings.slice(0, 4).map((heading, index) => Math.max(heading.length, ...rows.map((row) => row.values[index].length)));
+  const usageStart = widths.reduce((total, width) => total + width, 0) + 2 * 4;
+  writeLine([
+    ...headings.slice(0, 4).map((heading, index) => paint("1", heading.padEnd(widths[index]))),
+    paint("1", "USAGE"),
+  ].join("  "));
+  for (const row of rows) {
+    const prefix = row.values.map((value, index) => value.padEnd(widths[index])).join("  ");
+    writeLine(`${prefix}  ${row.usage[0]}`);
+    for (const line of row.usage.slice(1)) writeLine(`${" ".repeat(usageStart)}${line}`);
+  }
+}
+
+function renderUsage(usage, timezone = "UTC") {
+  if (!usage || usage.status !== "available" || !Array.isArray(usage.windows) || usage.windows.length === 0) {
+    return ["unavailable"];
+  }
+  const byId = new Map(usage.windows.map((window) => [window.id, window]));
+  const lines = [];
+  for (const id of ["five_hour", "week"]) {
+    const window = byId.get(id);
+    if (!window) continue;
+    const label = id === "five_hour" ? "5h" : "week";
+    if (window.status !== "available") {
+      lines.push(`${label} unavailable`);
+      continue;
+    }
+    if (typeof window.percent !== "number" || !Number.isFinite(window.percent) || window.percent < 0 || window.percent > 100) {
+      lines.push(`${label} unavailable`);
+      continue;
+    }
+    const reset = formatResetTime(window.resetsAt, timezone);
+    lines.push(reset === null ? `${label} unavailable` : `${label} ${Math.round(window.percent)}% · resets ${reset}`);
+  }
+  return lines.length > 0 ? lines : ["unavailable"];
 }
