@@ -35,6 +35,16 @@ export function providerAuthArguments(provider) {
   return provider === "claude" ? ["auth", "login"] : ["login"];
 }
 
+export function providerAuthStatusArguments(provider) {
+  validateProvider(provider);
+  return provider === "claude" ? ["auth", "status"] : ["login", "status"];
+}
+
+export function providerVersionArguments(provider) {
+  validateProvider(provider);
+  return ["--version"];
+}
+
 export function buildT3Instance({ provider, profileHome, sourceHome, sharing }) {
   const driver = providerDriver(provider);
   if (provider === "claude") {
@@ -61,6 +71,32 @@ export function buildT3Instance({ provider, profileHome, sourceHome, sharing }) 
         ? { homePath: sourceHome, shadowHomePath: profileHome }
         : { homePath: profileHome, shadowHomePath: "" },
   };
+}
+
+export function reconcileT3Instance(existing, desired, instanceId) {
+  if (existing === undefined) return desired;
+  if (existing.driver !== desired.driver) {
+    throw new Error(
+      `T3 provider instance '${instanceId}' uses driver '${existing.driver}', expected '${desired.driver}'.`,
+    );
+  }
+  if (!existing.config || typeof existing.config !== "object" || Array.isArray(existing.config)) {
+    throw new Error(`T3 provider instance '${instanceId}' has an incompatible config.`);
+  }
+
+  const next = { ...existing, ...desired };
+  const existingConfig = existing.config;
+  if (existingConfig && typeof existingConfig === "object" && !Array.isArray(existingConfig)) {
+    next.config = { ...existingConfig, ...desired.config };
+  }
+  if (desired.environment) {
+    const managedNames = new Set(desired.environment.map((entry) => entry.name));
+    next.environment = [
+      ...(existing.environment ?? []).filter((entry) => !managedNames.has(entry.name)),
+      ...desired.environment,
+    ];
+  }
+  return next;
 }
 
 export function sharingSummary({ provider, sharing, sourceHome, links }) {

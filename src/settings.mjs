@@ -187,6 +187,12 @@ export function buildNextSettings({ document, provider, sourceHome, profileHome,
   return next;
 }
 
+export function withoutProviderInstance(document, instanceId) {
+  const next = clone(document);
+  if (next.providerInstances) delete next.providerInstances[instanceId];
+  return next;
+}
+
 export async function backupAndWriteSettings({ settingsPath, backupsPath, expectedRaw, raw, next }) {
   const expected = expectedRaw ?? raw;
   const current = await readCurrentFile(settingsPath, "T3 settings");

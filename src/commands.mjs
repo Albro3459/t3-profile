@@ -31,31 +31,44 @@ import {
   requireDirectory,
   requireFile,
   resolveManagedRoot,
+  t3SettingsPath,
 } from "./paths.mjs";
 import {
   makeEnvironment,
   buildT3Instance,
   providerAuthArguments,
+  providerAuthStatusArguments,
   providerBinary,
+  providerVersionArguments,
+  reconcileT3Instance,
   sharingSummary,
 } from "./providers.mjs";
-import { runProvider } from "./process.mjs";
+import { inspectCommand, runProvider } from "./process.mjs";
 import {
   findByInstanceId,
   findProfile,
   readRegistry,
   serializeRegistry,
+  withoutProfile,
 } from "./registry.mjs";
 import {
   backupAndWriteSettings,
   buildNextSettings,
   primaryHomeValues,
   readSettingsDocument,
+  withoutProviderInstance,
 } from "./settings.mjs";
 import {
   printAddSummary,
+  printAuthenticated,
+  printAuthenticationIncomplete,
   printCreated,
+  printDoctor,
   printList,
+  printRemoved,
+  printRemoveSummary,
+  printSynced,
+  printSyncSummary,
 } from "./output.mjs";
 
 function requirePositional(command, values, expected) {
@@ -71,6 +84,33 @@ export function parseArguments(argv) {
   if (command === "list") {
     requirePositional(command, rest, 0);
     return { command };
+  }
+  if (command === "doctor") {
+    if (rest.length !== 0 && rest.length !== 2) {
+      throw error("Invalid arguments for 'doctor'.", "Pass no profile or one provider and profile name.");
+    }
+    return { command, provider: rest[0], name: rest[1] };
+  }
+  if (command === "sync") {
+    let dryRun = false;
+    let yes = false;
+    for (const value of rest) {
+      if (value === "--dry-run") dryRun = true;
+      else if (value === "--yes") yes = true;
+      else throw error(`Unknown option '${value}'.`, "Use 't3-profile --help' for usage.");
+    }
+    return { command, dryRun, yes };
+  }
+  if (command === "remove") {
+    const positional = [];
+    let yes = false;
+    for (const value of rest) {
+      if (value === "--yes") yes = true;
+      else if (value.startsWith("-")) throw error(`Unknown option '${value}'.`, "Use 't3-profile --help' for usage.");
+      else positional.push(value);
+    }
+    requirePositional(command, positional, 2);
+    return { command, provider: positional[0], name: positional[1], yes };
   }
   if (command === "auth") {
     requirePositional(command, rest, 2);
@@ -88,6 +128,7 @@ export function parseArguments(argv) {
   const positional = [];
   let home;
   let isolated = false;
+  let skipAuth = false;
   let yes = false;
   for (let index = 0; index < rest.length; index += 1) {
     const value = rest[index];
@@ -97,6 +138,10 @@ export function parseArguments(argv) {
     }
     if (value === "--yes") {
       yes = true;
+      continue;
+    }
+    if (value === "--skip-auth") {
+      skipAuth = true;
       continue;
     }
     if (value === "--home") {
@@ -118,7 +163,7 @@ export function parseArguments(argv) {
   }
   requirePositional(command, positional, 2);
   if (isolated && yes) throw error("--isolated and --yes cannot be combined.", "Choose one sharing mode.");
-  return { command, provider: positional[0], name: positional[1], home, isolated, yes };
+  return { command, provider: positional[0], name: positional[1], home, isolated, skipAuth, yes };
 }
 
 function defaultSource(provider) {
@@ -134,7 +179,7 @@ async function prompt(question, defaultValue = false) {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw error(
       "This command needs interactive confirmation.",
-      "Use --yes for standard sharing or --isolated for an explicit non-shared profile.",
+      "Run it in an interactive terminal or pass --yes when that option is supported.",
     );
   }
   const readline = await import("node:readline/promises");
@@ -649,7 +694,18 @@ async function addCommand(options) {
     name: prepared.name,
     profileHome: displayPath(prepared.paths.profileHome),
     sharing: prepared.sharing,
+    skipAuth: prepared.skipAuth,
   });
+  if (prepared.skipAuth) return;
+  try {
+    const exitCode = await authCommand(prepared);
+    if (exitCode === 0) printAuthenticated();
+    else printAuthenticationIncomplete(prepared.provider, prepared.name);
+    return exitCode;
+  } catch (cause) {
+    printAuthenticationIncomplete(prepared.provider, prepared.name);
+    throw cause;
+  }
 }
 
 async function loadProfile(providerValue, nameValue) {
@@ -695,10 +751,453 @@ async function listCommand() {
   printList(registry.profiles.map((profile) => ({ ...profile, profileHome: displayPath(profile.profileHome) })));
 }
 
+function desiredInstance(profile) {
+  return buildT3Instance({
+    provider: profile.provider,
+    profileHome: profile.profileHome,
+    sourceHome: profile.sourceHome,
+    sharing: profile.sharing,
+  });
+}
+
+function buildSyncPlan(document, profiles) {
+  const next = JSON.parse(JSON.stringify(document));
+  next.providerInstances ??= {};
+  const changes = [];
+  const seen = new Set();
+  for (const profile of [...profiles].sort((left, right) => left.instanceId.localeCompare(right.instanceId))) {
+    if (seen.has(profile.instanceId)) {
+      throw error(`Registry instance ID '${profile.instanceId}' is duplicated.`, "Fix profiles.json and retry.");
+    }
+    seen.add(profile.instanceId);
+    const existing = next.providerInstances[profile.instanceId];
+    let reconciled;
+    try {
+      reconciled = reconcileT3Instance(existing, desiredInstance(profile), profile.instanceId);
+    } catch (cause) {
+      throw error(cause.message, "Resolve the collision in T3 settings before syncing.");
+    }
+    if (!isDeepStrictEqual(existing, reconciled)) {
+      changes.push({ action: existing === undefined ? "add" : "update", instanceId: profile.instanceId });
+      next.providerInstances[profile.instanceId] = reconciled;
+    }
+  }
+  return { next, changes };
+}
+
+async function syncCommand(options) {
+  const managedRoot = await resolveManagedRoot();
+  const registryPath = path.join(managedRoot, "profiles.json");
+  const registry = await readRegistry(registryPath);
+  const settingsPath = t3SettingsPath();
+  const settings = await readSettingsDocument(settingsPath);
+  for (const profile of registry.profiles) {
+    const expectedPaths = pathsFor({
+      provider: profile.provider,
+      name: profile.name,
+      sourceHome: profile.sourceHome,
+      managedRoot,
+    });
+    if (!isSamePath(profile.profileHome, expectedPaths.profileHome) || profile.instanceId !== expectedPaths.instanceId) {
+      throw error(
+        `Profile '${profile.provider} ${profile.name}' has unexpected managed identity fields.`,
+        "Fix profiles.json before syncing.",
+      );
+    }
+    if (!(await pathExistsAsDirectory(profile.profileHome))) {
+      throw error(`Profile home '${profile.profileHome}' does not exist.`, "Run doctor and repair or remove the profile.");
+    }
+  }
+  const plan = buildSyncPlan(settings.value, registry.profiles);
+  printSyncSummary(plan.changes, options.dryRun);
+  if (plan.changes.length === 0 || options.dryRun) return;
+  if (!options.yes) {
+    const confirmed = await prompt("T3 is fully stopped and ready to update? [y/N] ", false);
+    if (!confirmed) throw new CancelledError();
+  }
+
+  const current = await readSettingsDocument(settingsPath);
+  if (current.raw !== settings.raw) {
+    throw error("T3 settings changed while waiting for sync.", "Rerun sync to review the new state.");
+  }
+  const currentRegistry = await readRegistry(registryPath);
+  if (currentRegistry.raw !== registry.raw) {
+    throw error("The profile registry changed while waiting for sync.", "Rerun sync to review the new state.");
+  }
+  const finalPlan = buildSyncPlan(current.value, currentRegistry.profiles);
+  const result = await backupAndWriteSettings({
+    settingsPath,
+    backupsPath: path.join(managedRoot, "backups"),
+    expectedRaw: current.raw,
+    next: finalPlan.next,
+  });
+  const written = await readSettingsDocument(settingsPath);
+  if (!isDeepStrictEqual(written.value, finalPlan.next)) {
+    throw error("T3 settings verification failed after sync.", `Restore '${result.backupPath}' and retry.`);
+  }
+  printSynced(finalPlan.changes.length, displayPath(result.backupPath));
+}
+
+async function writeRemovedControlFiles({ managedRoot, settings, registry, nextSettings, nextProfiles }) {
+  const settingsPath = t3SettingsPath();
+  const registryPath = path.join(managedRoot, "profiles.json");
+  const registryRaw = `${JSON.stringify(serializeRegistry(nextProfiles), null, 2)}\n`;
+  const registryMode = await existingMode(registryPath, 0o600);
+  const mutation = { settings: null, registry: null, backupPath: undefined };
+  try {
+    const settingsResult = await backupAndWriteSettings({
+      settingsPath,
+      backupsPath: path.join(managedRoot, "backups"),
+      expectedRaw: settings.raw,
+      next: nextSettings,
+    });
+    mutation.backupPath = settingsResult.backupPath;
+    mutation.settings = {
+      originalRaw: settings.raw,
+      originalMode: settings.mode,
+      writtenRaw: settingsResult.writtenRaw,
+    };
+    await writeAtomicIfUnchanged(
+      registryPath,
+      registry.raw,
+      registryRaw,
+      registryMode,
+      "profile registry",
+    );
+    mutation.registry = {
+      originalRaw: registry.raw,
+      originalMode: registryMode,
+      writtenRaw: registryRaw,
+    };
+    const writtenSettings = await readSettingsDocument(settingsPath);
+    const writtenRegistry = await readRegistry(registryPath);
+    if (!isDeepStrictEqual(writtenSettings.value, nextSettings) || !isDeepStrictEqual(writtenRegistry.profiles, nextProfiles)) {
+      throw error("Remove verification failed.", "Leave T3 stopped and restore the control files.");
+    }
+    return mutation.backupPath;
+  } catch (cause) {
+    const failures = [];
+    if (mutation.registry) {
+      try {
+        await restoreAtomicIfUnchanged(
+          registryPath,
+          mutation.registry.writtenRaw,
+          mutation.registry.originalRaw,
+          mutation.registry.originalMode,
+          "profile registry",
+        );
+      } catch (restoreCause) {
+        failures.push(`registry: ${restoreCause.message}`);
+      }
+    }
+    if (mutation.settings) {
+      try {
+        await restoreAtomicIfUnchanged(
+          settingsPath,
+          mutation.settings.writtenRaw,
+          mutation.settings.originalRaw,
+          mutation.settings.originalMode,
+          "T3 settings",
+        );
+      } catch (restoreCause) {
+        failures.push(`settings: ${restoreCause.message}`);
+      }
+    }
+    if (failures.length > 0) {
+      throw error(
+        `Remove failed and rollback was incomplete: ${failures.join("; ")}.`,
+        `Leave T3 stopped and restore '${mutation.backupPath ?? settingsPath}'.`,
+      );
+    }
+    throw cause;
+  }
+}
+
+async function removeCommand(options) {
+  const provider = validateProvider(options.provider);
+  const name = validateName(options.name);
+  const managedRoot = await resolveManagedRoot();
+  const registryPath = path.join(managedRoot, "profiles.json");
+  const registry = await readRegistry(registryPath);
+  const profile = findProfile(registry.profiles, provider, name);
+  if (!profile) throw error(`Profile '${provider} ${name}' is not configured.`, "Run t3-profile list.");
+  const expectedHome = path.join(managedRoot, "profiles", provider, name);
+  const expectedInstanceId = pathsFor({ provider, name, sourceHome: profile.sourceHome, managedRoot }).instanceId;
+  if (!isSamePath(profile.profileHome, expectedHome) || profile.instanceId !== expectedInstanceId) {
+    throw error(`Profile '${provider} ${name}' has unexpected managed identity fields.`, "Fix profiles.json before removing it.");
+  }
+  const homeStats = await lstatOrNull(profile.profileHome);
+  if (homeStats?.isSymbolicLink() || (homeStats && !homeStats.isDirectory())) {
+    throw error(`Profile home '${profile.profileHome}' is not a regular directory.`, "Move it aside and run remove again.");
+  }
+  const settings = await readSettingsDocument(t3SettingsPath());
+  const existingInstance = settings.value.providerInstances?.[profile.instanceId];
+  if (existingInstance && existingInstance.driver !== desiredInstance(profile).driver) {
+    throw error(
+      `T3 provider instance '${profile.instanceId}' uses an unexpected driver.`,
+      "Resolve the collision before removing the profile.",
+    );
+  }
+  printRemoveSummary({
+    providerTitle: providerTitle(provider),
+    name,
+    profileHome: displayPath(profile.profileHome),
+    instanceId: profile.instanceId,
+  });
+  if (!options.yes) {
+    const confirmed = await prompt("Permanently remove this profile? [y/N] ", false);
+    if (!confirmed) throw new CancelledError();
+  }
+
+  const finalRegistry = await readRegistry(registryPath);
+  const finalProfile = findProfile(finalRegistry.profiles, provider, name);
+  if (!finalProfile || !isDeepStrictEqual(finalProfile, profile)) {
+    throw error("The profile registry changed while waiting for removal.", "Rerun remove to review the new state.");
+  }
+  const finalSettings = await readSettingsDocument(t3SettingsPath());
+  const finalInstance = finalSettings.value.providerInstances?.[profile.instanceId];
+  if (finalInstance && finalInstance.driver !== desiredInstance(profile).driver) {
+    throw error(
+      `T3 provider instance '${profile.instanceId}' changed while waiting for removal.`,
+      "Rerun remove to review the new state.",
+    );
+  }
+  const finalHomeStats = await lstatOrNull(profile.profileHome);
+  if (finalHomeStats?.isSymbolicLink() || (finalHomeStats && !finalHomeStats.isDirectory())) {
+    throw error("The profile home changed while waiting for removal.", "Rerun remove to review the new state.");
+  }
+  if (
+    Boolean(homeStats) !== Boolean(finalHomeStats) ||
+    (homeStats && finalHomeStats && (homeStats.dev !== finalHomeStats.dev || homeStats.ino !== finalHomeStats.ino))
+  ) {
+    throw error("The profile home changed while waiting for removal.", "Rerun remove to review the new state.");
+  }
+  const nextProfiles = withoutProfile(finalRegistry.profiles, provider, name);
+  const nextSettings = withoutProviderInstance(finalSettings.value, profile.instanceId);
+  const removingHome = `${profile.profileHome}.removing`;
+  if (finalHomeStats) {
+    if (await lstatOrNull(removingHome)) {
+      throw error(`Removal holding path '${removingHome}' already exists.`, "Move it aside and retry.");
+    }
+    try {
+      await fs.rename(profile.profileHome, removingHome);
+    } catch {
+      throw error(
+        `The profile home '${profile.profileHome}' could not be secured for removal.`,
+        "Check its permissions and retry.",
+      );
+    }
+    const movedStats = await fs.lstat(removingHome);
+    if (movedStats.dev !== finalHomeStats.dev || movedStats.ino !== finalHomeStats.ino) {
+      throw error(
+        `The profile home changed while moving it to '${removingHome}'.`,
+        "Leave T3 stopped and inspect both paths manually.",
+      );
+    }
+  }
+  try {
+    await writeRemovedControlFiles({
+      managedRoot,
+      settings: finalSettings,
+      registry: finalRegistry,
+      nextSettings,
+      nextProfiles,
+    });
+  } catch (cause) {
+    if (finalHomeStats) {
+      try {
+        if (await lstatOrNull(profile.profileHome)) throw new Error("original profile path is no longer empty");
+        await fs.rename(removingHome, profile.profileHome);
+      } catch (restoreCause) {
+        throw error(
+          `${cause.message} The profile home remains at '${removingHome}': ${restoreCause.message}.`,
+          "Leave T3 stopped and restore the listed paths manually.",
+        );
+      }
+    }
+    throw cause;
+  }
+  if (finalHomeStats) {
+    const removingStats = await fs.lstat(removingHome);
+    if (removingStats.dev !== finalHomeStats.dev || removingStats.ino !== finalHomeStats.ino) {
+      throw error(
+        `The profile was unregistered, but removal path '${removingHome}' changed unexpectedly.`,
+        "Inspect and remove the retained directory manually.",
+      );
+    }
+    try {
+      await fs.rm(removingHome, { recursive: true });
+    } catch {
+      throw error(
+        `The profile was unregistered, but '${removingHome}' could not be deleted.`,
+        "Delete that retained directory manually.",
+      );
+    }
+  }
+  printRemoved({ providerTitle: providerTitle(provider), name });
+}
+
+function diagnostic(results, level, label, message) {
+  results.push({ level, label, message });
+}
+
+async function diagnosePlatform(results) {
+  if (process.platform !== "darwin" || process.arch !== "arm64") {
+    diagnostic(results, "warn", "platform", `${process.platform} ${process.arch} is untested; only macOS 26.5 on ARM is tested.`);
+    return;
+  }
+  const version = await inspectCommand("sw_vers", ["-productVersion"]);
+  const productVersion = version.found && version.code === 0 ? version.stdout.trim() : "unknown macOS version";
+  diagnostic(
+    results,
+    productVersion === "26.5" ? "pass" : "warn",
+    "platform",
+    productVersion === "26.5" ? "macOS 26.5 on ARM is tested." : `${productVersion} on ARM is untested; macOS 26.5 is tested.`,
+  );
+}
+
+async function diagnoseProvider(results, profile) {
+  const label = `${profile.provider} ${profile.name}`;
+  const environment = makeEnvironment(profile.provider, profile.profileHome);
+  const version = await inspectCommand(
+    providerBinary(profile.provider),
+    providerVersionArguments(profile.provider),
+    environment,
+  );
+  if (!version.found) {
+    diagnostic(results, "error", `${label} binary`, `${profile.provider} was not found on PATH.`);
+    return;
+  }
+  const versionText = `${version.stdout}\n${version.stderr}`.match(/\d+\.\d+\.\d+/)?.[0] ?? "unknown";
+  if (profile.provider === "claude" && versionText === "2.1.235") {
+    diagnostic(results, "pass", `${label} version`, "Claude Code 2.1.235 is tested.");
+  } else if (profile.provider === "claude") {
+    diagnostic(results, "warn", `${label} version`, `Claude Code ${versionText} is untested; 2.1.235 is tested.`);
+  } else {
+    diagnostic(results, "warn", `${label} version`, `Codex ${versionText} is untested.`);
+  }
+  const auth = await inspectCommand(
+    providerBinary(profile.provider),
+    providerAuthStatusArguments(profile.provider),
+    environment,
+  );
+  diagnostic(
+    results,
+    auth.code === 0 ? "pass" : "error",
+    `${label} auth`,
+    auth.code === 0 ? "native CLI reports authenticated." : "native CLI reports missing or invalid authentication; run t3-profile auth.",
+  );
+}
+
+async function diagnoseProfile(results, profile, settings, managedRoot) {
+  const label = `${profile.provider} ${profile.name}`;
+  const expectedHome = path.join(managedRoot, "profiles", profile.provider, profile.name);
+  const expectedInstanceId = pathsFor({
+    provider: profile.provider,
+    name: profile.name,
+    sourceHome: profile.sourceHome,
+    managedRoot,
+  }).instanceId;
+  const identityValid = isSamePath(profile.profileHome, expectedHome) && profile.instanceId === expectedInstanceId;
+  const stats = await lstatOrNull(profile.profileHome);
+  if (!identityValid) {
+    diagnostic(results, "error", `${label} identity`, "registry identity does not match its expected managed path and instance ID.");
+  } else if (!stats || stats.isSymbolicLink() || !stats.isDirectory()) {
+    diagnostic(results, "error", `${label} home`, "managed profile directory is missing or invalid.");
+  } else {
+    try {
+      await fs.access(profile.profileHome, 6);
+      diagnostic(results, "pass", `${label} home`, "managed profile directory is readable and writable.");
+    } catch {
+      diagnostic(results, "error", `${label} home`, "managed profile directory is not readable and writable.");
+    }
+  }
+
+  if (!(await pathExistsAsDirectory(profile.sourceHome))) {
+    diagnostic(results, "error", `${label} source`, "primary source home is missing.");
+  } else {
+    diagnostic(results, "pass", `${label} source`, "primary source home exists.");
+  }
+  const existing = settings?.value.providerInstances?.[profile.instanceId];
+  if (!existing) {
+    diagnostic(results, "error", `${label} T3`, `instance '${profile.instanceId}' is missing; run t3-profile sync.`);
+  } else {
+    try {
+      const reconciled = reconcileT3Instance(existing, desiredInstance(profile), profile.instanceId);
+      diagnostic(
+        results,
+        isDeepStrictEqual(existing, reconciled) ? "pass" : "warn",
+        `${label} T3`,
+        isDeepStrictEqual(existing, reconciled) ? "provider instance is in sync." : "provider instance has drift; run t3-profile sync.",
+      );
+    } catch (cause) {
+      diagnostic(results, "error", `${label} T3`, cause.message);
+    }
+  }
+
+  if (profile.provider === "claude" && profile.sharing === "standard") {
+    for (const link of profile.links) {
+      const linkName = path.basename(link.destination);
+      try {
+        const destinationStats = await fs.lstat(link.destination);
+        const sourceTarget = await fs.realpath(link.source);
+        const destinationTarget = await fs.realpath(link.destination);
+        if (!destinationStats.isSymbolicLink() || !isSamePath(sourceTarget, destinationTarget)) {
+          throw new Error("missing, not a link, or points to the wrong source");
+        }
+        diagnostic(results, "pass", `${label} share ${linkName}`, "live link is healthy.");
+      } catch {
+        diagnostic(results, "error", `${label} share ${linkName}`, "live link or source is missing or invalid.");
+      }
+    }
+  }
+  if (identityValid && stats?.isDirectory()) await diagnoseProvider(results, profile);
+}
+
+async function doctorCommand(options) {
+  const results = [];
+  await diagnosePlatform(results);
+  const managedRoot = await resolveManagedRoot();
+  let registry;
+  try {
+    registry = await readRegistry(path.join(managedRoot, "profiles.json"));
+    diagnostic(results, "pass", "registry", `${registry.profiles.length} managed profile${registry.profiles.length === 1 ? "" : "s"} loaded.`);
+  } catch (cause) {
+    diagnostic(results, "error", "registry", cause.message);
+    printDoctor(results);
+    return 1;
+  }
+  let settings;
+  try {
+    settings = await readSettingsDocument(t3SettingsPath());
+    diagnostic(results, "pass", "T3 settings", "settings file is valid.");
+  } catch (cause) {
+    diagnostic(results, "error", "T3 settings", cause.message);
+  }
+  let profiles = registry.profiles;
+  if (options.provider !== undefined) {
+    const provider = validateProvider(options.provider);
+    const name = validateName(options.name);
+    const profile = findProfile(profiles, provider, name);
+    if (!profile) {
+      diagnostic(results, "error", `${provider} ${name}`, "profile is not configured.");
+      printDoctor(results);
+      return 1;
+    }
+    profiles = [profile];
+  }
+  for (const profile of profiles) await diagnoseProfile(results, profile, settings, managedRoot);
+  printDoctor(results);
+  return results.some((result) => result.level === "error") ? 1 : 0;
+}
+
 export async function dispatch(options) {
   if (options.command === "add") return addCommand(options);
   if (options.command === "auth") return authCommand(options);
   if (options.command === "run") return runCommand(options);
   if (options.command === "list") return listCommand();
+  if (options.command === "sync") return syncCommand(options);
+  if (options.command === "doctor") return doctorCommand(options);
+  if (options.command === "remove") return removeCommand(options);
   throw error(`Unknown command '${options.command}'.`, "Use 't3-profile --help' for usage.");
 }
