@@ -1,7 +1,7 @@
 # t3-profile v2 review fixes
 
-Status: implementation plan only. This document covers the findings from the
-v2 implementation review of commit `48a4773`.
+Status: implemented and validated on 2026-08-19. This document covers the
+findings from the v2 implementation review of commit `48a4773`.
 
 ## Goals
 
@@ -241,6 +241,38 @@ existing syntax build.
 - Final manual inspection confirms settings/registry preservation, backup
   creation only for actual settings writes, and no changes outside the fixture
   managed root and T3 settings path.
+
+## Validation results
+
+Validated on macOS 26.5 ARM using focused temporary fixtures; no automated test
+suite was added or run.
+
+- `npm run build` and `git diff --check` passed.
+- Interactive `add`, mutating `sync`, and `remove` displayed the exact
+  stopped-T3 prompt. Declining each stopped boundary preserved settings,
+  registry, profile homes, and backup count.
+- `remove` displayed permanent-deletion consent before the separate stopped-T3
+  confirmation. `--yes` skipped prompts while retaining managed-chain and drift
+  validation.
+- `sync --dry-run` and an already-synchronized `sync` did not prompt, write, or
+  create another backup. A real sync created one backup and updated settings.
+- Replacing the managed `profiles` parent with a symbolic link made
+  `remove --yes` fail closed; the external marker, settings, and registry were
+  unchanged.
+- Replacing a profile home while `sync` waited for confirmation made sync fail
+  before a settings write or backup.
+- Stubbed Claude version and authentication probes saw both descriptor override
+  variables absent and both selected-profile directory variables set correctly.
+- Removal output disclosed native credential retention. A successful fixture
+  removal deleted only the managed profile home and preserved its source home.
+- Replacing a registered Claude directory source with a regular file produced a
+  doctor error. A healthy link, synchronized T3 instance, missing binary, and
+  confirmed unauthenticated provider retained distinct diagnostics.
+- Stalled version and authentication probes each timed out distinctly in about
+  five seconds, and a process inspection found no remaining probe child.
+- Final inspection found no fixture changes outside the temporary managed root,
+  source home, and T3 settings root. The fixture was moved to macOS Trash after
+  validation.
 
 ## Completion criteria
 

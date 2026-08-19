@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { error } from "./errors.mjs";
-import { isSamePath, pathsOverlap } from "./paths.mjs";
+import { isPathWithin, isSamePath, pathsOverlap } from "./paths.mjs";
 
 const CLAUDE_MANIFEST = [
   { name: "settings.json", type: "file" },
@@ -235,6 +235,81 @@ async function verifyLink(resource) {
     );
   }
   return resource.destination;
+}
+
+function linkInspectionFailure(message) {
+  return { ok: false, message };
+}
+
+async function isSupportedClaudeDestination(resource, stats) {
+  if (stats.isSymbolicLink()) return true;
+  if (process.platform !== "win32" || resource.type !== "directory") return false;
+  try {
+    await fs.readlink(resource.destination);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Inspect a registry-owned Claude link without repairing or changing it.
+ * Windows directory junctions are accepted through lstat or readlink; regular
+ * directories never satisfy the link check.
+ */
+export async function inspectClaudeLink(resource, profileHome) {
+  let destinationStats;
+  try {
+    destinationStats = await fs.lstat(resource.destination);
+  } catch (cause) {
+    if (cause?.code === "ENOENT" || cause?.code === "ENOTDIR") {
+      return linkInspectionFailure("destination is missing");
+    }
+    return linkInspectionFailure("destination cannot be inspected");
+  }
+  if (!(await isSupportedClaudeDestination(resource, destinationStats))) {
+    return linkInspectionFailure("destination is not a supported link");
+  }
+
+  let canonicalProfileHome;
+  let canonicalDestinationParent;
+  try {
+    canonicalProfileHome = await fs.realpath(profileHome);
+    canonicalDestinationParent = await fs.realpath(path.dirname(resource.destination));
+  } catch (cause) {
+    if (cause?.code === "ENOENT" || cause?.code === "ENOTDIR") {
+      return linkInspectionFailure("destination parent or managed profile home is missing");
+    }
+    return linkInspectionFailure("destination parent or managed profile home cannot be resolved");
+  }
+  if (!isPathWithin(canonicalProfileHome, canonicalDestinationParent)) {
+    return linkInspectionFailure("destination is outside the managed profile home");
+  }
+
+  let sourceTarget;
+  let destinationTarget;
+  let sourceStats;
+  let destinationTargetStats;
+  try {
+    sourceTarget = await fs.realpath(resource.source);
+    destinationTarget = await fs.realpath(resource.destination);
+    sourceStats = await fs.stat(resource.source);
+    destinationTargetStats = await fs.stat(resource.destination);
+    await fs.access(resource.source, 4);
+    await fs.access(resource.destination, 4);
+  } catch (cause) {
+    if (cause?.code === "ENOENT" || cause?.code === "ENOTDIR") {
+      return linkInspectionFailure("source or destination target is missing or broken");
+    }
+    return linkInspectionFailure("source or destination target cannot be read");
+  }
+  if (!isSamePath(sourceTarget, destinationTarget)) {
+    return linkInspectionFailure("destination points to an unexpected source");
+  }
+  if (!resourceTypeMatches(sourceStats, resource.type) || !resourceTypeMatches(destinationTargetStats, resource.type)) {
+    return linkInspectionFailure("source or destination target has an unexpected type");
+  }
+  return { ok: true };
 }
 
 export async function verifyClaudeLinks(resources) {

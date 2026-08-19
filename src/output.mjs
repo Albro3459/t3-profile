@@ -34,9 +34,22 @@ Options:
   --skip-auth    Create the profile without starting provider authentication.
   --dry-run      Show the changes sync would make without writing them.
   --yes          For add, select standard sharing. For add, sync, or remove,
-                 assume T3 is stopped and skip confirmation prompts.
+                 assert that T3 is stopped and accept the command's other
+                 confirmations; validation and drift checks still run.
   --help         Show this help.
-  --version      Show the version.`);
+  --version      Show the version.
+
+Confirmation behavior:
+  add prompts after the creation/sharing summary and before mutation.
+  mutating sync prompts after its deterministic plan and before mutation.
+  remove first asks for destructive consent, then immediately asks whether
+  T3 is stopped before mutation. The stopped-T3 prompt is:
+  T3 is fully stopped and ready to update? [y/N]
+  sync --dry-run and synchronized sync no-ops, read-only list and doctor, and
+  provider-only auth and run do not show the stopped-T3 prompt or require T3
+  to be stopped. Declining any shown confirmation prevents mutation; declining
+  remove's destructive consent does not continue to the stopped-T3 prompt.
+  Native provider CLIs may still prompt natively.`);
 }
 
 export function printCancelled() {
@@ -144,7 +157,9 @@ export function printRemoveSummary({ providerTitle, name, profileHome, instanceI
   writeLine(`Profile home: ${profileHome}`);
   writeLine(`T3 instance:  ${instanceId}`);
   writeLine("");
-  writeLine("The managed profile home, private authentication, and local history will be permanently deleted.");
+  writeLine("The managed profile home, including private files and local history stored there, will be permanently deleted.");
+  writeLine("Removal does not perform native logout or token revocation.");
+  writeLine("Credentials may remain in macOS Keychain or another provider credential store until you revoke them or log out separately.");
   writeLine("Quit T3 Code and stop every `t3 serve` and `t3 connect` process.");
 }
 

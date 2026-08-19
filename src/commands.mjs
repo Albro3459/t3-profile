@@ -12,6 +12,7 @@ import {
 import { CancelledError, error } from "./errors.mjs";
 import {
   createLinks,
+  inspectClaudeLink,
   inspectClaudeResources,
   preflightLinks,
   rollbackLinks,
@@ -24,14 +25,19 @@ import {
 } from "./names.mjs";
 import {
   displayPath,
+  filesystemIdentity,
   isSamePath,
+  isPathWithin,
+  isRedirectedStats,
   lstatOrNull,
   pathsFor,
   pathsOverlap,
   requireDirectory,
   requireFile,
   resolveManagedRoot,
+  sameFilesystemIdentity,
   t3SettingsPath,
+  validateManagedProfileChain,
 } from "./paths.mjs";
 import {
   makeEnvironment,
@@ -191,6 +197,14 @@ async function prompt(question, defaultValue = false) {
   } finally {
     interfaceInstance.close();
   }
+}
+
+const STOPPED_T3_PROMPT = "T3 is fully stopped and ready to update? [y/N] ";
+
+async function confirmStoppedT3(yes) {
+  if (yes) return;
+  const confirmed = await prompt(STOPPED_T3_PROMPT, false);
+  if (!confirmed) throw new CancelledError();
 }
 
 function sharingQuestion({ provider, sourceHome, resources }) {
@@ -444,9 +458,7 @@ async function confirmStopped(prepared) {
     primaryValues: prepared.primaryValues,
     t3SettingsPath: displayPath(prepared.paths.settingsPath),
   });
-  if (prepared.yes) return;
-  const confirmed = await prompt("T3 is fully stopped and ready to update? [y/N] ", false);
-  if (!confirmed) throw new CancelledError();
+  await confirmStoppedT3(prepared.yes);
 }
 
 async function ensureDirectoryChain(target, onCreate) {
@@ -785,13 +797,10 @@ function buildSyncPlan(document, profiles) {
   return { next, changes };
 }
 
-async function syncCommand(options) {
-  const managedRoot = await resolveManagedRoot();
-  const registryPath = path.join(managedRoot, "profiles.json");
-  const registry = await readRegistry(registryPath);
-  const settingsPath = t3SettingsPath();
-  const settings = await readSettingsDocument(settingsPath);
-  for (const profile of registry.profiles) {
+async function validateSyncFilesystem(managedRoot, profiles) {
+  const rootIdentities = [];
+  const profileIdentities = new Map();
+  for (const profile of profiles) {
     const expectedPaths = pathsFor({
       provider: profile.provider,
       name: profile.name,
@@ -804,30 +813,81 @@ async function syncCommand(options) {
         "Fix profiles.json before syncing.",
       );
     }
-    if (!(await pathExistsAsDirectory(profile.profileHome))) {
-      throw error(`Profile home '${profile.profileHome}' does not exist.`, "Run doctor and repair or remove the profile.");
+    const chain = await validateManagedProfileChain({
+      managedRoot,
+      provider: profile.provider,
+      name: profile.name,
+      requireHome: true,
+    });
+    const rootIdentity = filesystemIdentity(chain.managedRoot.stats);
+    if (!rootIdentities.some((identity) => sameFilesystemIdentity(identity, rootIdentity))) {
+      rootIdentities.push(rootIdentity);
+    }
+    profileIdentities.set(profile.instanceId, {
+      managedRoot: rootIdentity,
+      profiles: filesystemIdentity(chain.profiles.stats),
+      providerParent: filesystemIdentity(chain.providerParent.stats),
+      profileHome: filesystemIdentity(chain.profileHome.stats),
+    });
+  }
+  return { rootIdentities, profileIdentities };
+}
+
+function sameSyncFilesystemState(initial, current) {
+  if (initial.rootIdentities.length !== current.rootIdentities.length) return false;
+  if (!initial.rootIdentities.every((identity) => current.rootIdentities.some((candidate) => sameFilesystemIdentity(identity, candidate)))) {
+    return false;
+  }
+  if (initial.profileIdentities.size !== current.profileIdentities.size) return false;
+  for (const [instanceId, identity] of initial.profileIdentities) {
+    const currentIdentity = current.profileIdentities.get(instanceId);
+    if (!currentIdentity ||
+      !sameFilesystemIdentity(identity.managedRoot, currentIdentity.managedRoot) ||
+      !sameFilesystemIdentity(identity.profiles, currentIdentity.profiles) ||
+      !sameFilesystemIdentity(identity.providerParent, currentIdentity.providerParent) ||
+      !sameFilesystemIdentity(identity.profileHome, currentIdentity.profileHome)) {
+      return false;
     }
   }
+  return true;
+}
+
+async function syncCommand(options) {
+  const managedRoot = await resolveManagedRoot();
+  const registryPath = path.join(managedRoot, "profiles.json");
+  const registry = await readRegistry(registryPath);
+  const settingsPath = t3SettingsPath();
+  const settings = await readSettingsDocument(settingsPath);
+  const initialFilesystem = await validateSyncFilesystem(managedRoot, registry.profiles);
   const plan = buildSyncPlan(settings.value, registry.profiles);
   printSyncSummary(plan.changes, options.dryRun);
   if (plan.changes.length === 0 || options.dryRun) return;
-  if (!options.yes) {
-    const confirmed = await prompt("T3 is fully stopped and ready to update? [y/N] ", false);
-    if (!confirmed) throw new CancelledError();
-  }
+  await confirmStoppedT3(options.yes);
 
+  const finalManagedRoot = await resolveManagedRoot();
+  if (!isSamePath(finalManagedRoot, managedRoot)) {
+    throw error("The managed root changed while waiting for T3 to stop.", "Rerun sync to review the new state.");
+  }
+  const finalRegistryPath = path.join(finalManagedRoot, "profiles.json");
   const current = await readSettingsDocument(settingsPath);
   if (current.raw !== settings.raw) {
     throw error("T3 settings changed while waiting for sync.", "Rerun sync to review the new state.");
   }
-  const currentRegistry = await readRegistry(registryPath);
+  const currentRegistry = await readRegistry(finalRegistryPath);
   if (currentRegistry.raw !== registry.raw) {
     throw error("The profile registry changed while waiting for sync.", "Rerun sync to review the new state.");
+  }
+  const finalFilesystem = await validateSyncFilesystem(finalManagedRoot, currentRegistry.profiles);
+  if (!sameSyncFilesystemState(initialFilesystem, finalFilesystem)) {
+    throw error(
+      "A managed profile home or parent changed while waiting for sync.",
+      "Rerun sync to review the new state.",
+    );
   }
   const finalPlan = buildSyncPlan(current.value, currentRegistry.profiles);
   const result = await backupAndWriteSettings({
     settingsPath,
-    backupsPath: path.join(managedRoot, "backups"),
+    backupsPath: path.join(finalManagedRoot, "backups"),
     expectedRaw: current.raw,
     next: finalPlan.next,
   });
@@ -913,6 +973,75 @@ async function writeRemovedControlFiles({ managedRoot, settings, registry, nextS
   }
 }
 
+function removalParentIdentity(chain) {
+  return {
+    managedRoot: filesystemIdentity(chain.managedRoot.stats),
+    profiles: filesystemIdentity(chain.profiles.stats),
+    providerParent: filesystemIdentity(chain.providerParent.stats),
+  };
+}
+
+function sameRemovalParentIdentity(left, right) {
+  return sameFilesystemIdentity(left.managedRoot, right.managedRoot) &&
+    sameFilesystemIdentity(left.profiles, right.profiles) &&
+    sameFilesystemIdentity(left.providerParent, right.providerParent);
+}
+
+async function validateRemovalHolding({ holdingPath, chain, expectedIdentity }) {
+  const stats = await lstatOrNull(holdingPath);
+  if (!stats || isRedirectedStats(stats) || !stats.isDirectory()) {
+    throw error(
+      `Removal holding path '${holdingPath}' is missing or invalid.`,
+      `Leave T3 stopped and inspect '${holdingPath}' manually.`,
+    );
+  }
+  if (!sameFilesystemIdentity(filesystemIdentity(stats), expectedIdentity)) {
+    throw error(
+      `Removal holding path '${holdingPath}' changed unexpectedly.`,
+      `Leave T3 stopped and inspect '${holdingPath}' manually.`,
+    );
+  }
+  let canonical;
+  try {
+    canonical = await fs.realpath(holdingPath);
+  } catch {
+    throw error(
+      `Cannot resolve removal holding path '${holdingPath}'.`,
+      `Leave T3 stopped and inspect '${holdingPath}' manually.`,
+    );
+  }
+  if (!isSamePath(path.dirname(canonical), chain.providerParent.canonical) ||
+      !isPathWithin(chain.managedRoot.canonical, canonical)) {
+    throw error(
+      `Removal holding path '${holdingPath}' resolves outside the managed profile.`,
+      `Leave T3 stopped and inspect '${holdingPath}' manually.`,
+    );
+  }
+  return stats;
+}
+
+async function restoreRemovedHome({ profileHome, holdingPath, chain, expectedIdentity }) {
+  const currentChain = await validateManagedProfileChain({
+    managedRoot: chain.managedRoot.canonical,
+    provider: path.basename(chain.providerParent.canonical),
+    name: path.basename(profileHome),
+  });
+  if (!sameRemovalParentIdentity(removalParentIdentity(chain), removalParentIdentity(currentChain))) {
+    throw error(
+      `The managed profile parent changed; the profile home remains at '${holdingPath}'.`,
+      "Leave T3 stopped and restore the retained directory manually.",
+    );
+  }
+  if (currentChain.profileHome.stats) {
+    throw error(
+      `The original profile path '${profileHome}' is no longer empty; the profile home remains at '${holdingPath}'.`,
+      "Leave T3 stopped and restore the retained directory manually.",
+    );
+  }
+  await validateRemovalHolding({ holdingPath, chain: currentChain, expectedIdentity });
+  await fs.rename(holdingPath, profileHome);
+}
+
 async function removeCommand(options) {
   const provider = validateProvider(options.provider);
   const name = validateName(options.name);
@@ -926,10 +1055,13 @@ async function removeCommand(options) {
   if (!isSamePath(profile.profileHome, expectedHome) || profile.instanceId !== expectedInstanceId) {
     throw error(`Profile '${provider} ${name}' has unexpected managed identity fields.`, "Fix profiles.json before removing it.");
   }
-  const homeStats = await lstatOrNull(profile.profileHome);
-  if (homeStats?.isSymbolicLink() || (homeStats && !homeStats.isDirectory())) {
-    throw error(`Profile home '${profile.profileHome}' is not a regular directory.`, "Move it aside and run remove again.");
-  }
+  const initialChain = await validateManagedProfileChain({
+    managedRoot,
+    provider,
+    name,
+  });
+  const initialParentIdentity = removalParentIdentity(initialChain);
+  const initialHomeIdentity = filesystemIdentity(initialChain.profileHome.stats);
   const settings = await readSettingsDocument(t3SettingsPath());
   const existingInstance = settings.value.providerInstances?.[profile.instanceId];
   if (existingInstance && existingInstance.driver !== desiredInstance(profile).driver) {
@@ -948,6 +1080,7 @@ async function removeCommand(options) {
     const confirmed = await prompt("Permanently remove this profile? [y/N] ", false);
     if (!confirmed) throw new CancelledError();
   }
+  await confirmStoppedT3(options.yes);
 
   const finalRegistry = await readRegistry(registryPath);
   const finalProfile = findProfile(finalRegistry.profiles, provider, name);
@@ -962,22 +1095,31 @@ async function removeCommand(options) {
       "Rerun remove to review the new state.",
     );
   }
-  const finalHomeStats = await lstatOrNull(profile.profileHome);
-  if (finalHomeStats?.isSymbolicLink() || (finalHomeStats && !finalHomeStats.isDirectory())) {
-    throw error("The profile home changed while waiting for removal.", "Rerun remove to review the new state.");
-  }
-  if (
-    Boolean(homeStats) !== Boolean(finalHomeStats) ||
-    (homeStats && finalHomeStats && (homeStats.dev !== finalHomeStats.dev || homeStats.ino !== finalHomeStats.ino))
-  ) {
+  const finalChain = await validateManagedProfileChain({
+    managedRoot,
+    provider,
+    name,
+  });
+  if (!sameRemovalParentIdentity(initialParentIdentity, removalParentIdentity(finalChain)) ||
+      !sameFilesystemIdentity(initialHomeIdentity, filesystemIdentity(finalChain.profileHome.stats))) {
     throw error("The profile home changed while waiting for removal.", "Rerun remove to review the new state.");
   }
   const nextProfiles = withoutProfile(finalRegistry.profiles, provider, name);
   const nextSettings = withoutProviderInstance(finalSettings.value, profile.instanceId);
   const removingHome = `${profile.profileHome}.removing`;
-  if (finalHomeStats) {
+  if (finalChain.profileHome.stats) {
     if (await lstatOrNull(removingHome)) {
       throw error(`Removal holding path '${removingHome}' already exists.`, "Move it aside and retry.");
+    }
+    const beforeMoveChain = await validateManagedProfileChain({
+      managedRoot,
+      provider,
+      name,
+      requireHome: true,
+    });
+    if (!sameRemovalParentIdentity(initialParentIdentity, removalParentIdentity(beforeMoveChain)) ||
+        !sameFilesystemIdentity(initialHomeIdentity, filesystemIdentity(beforeMoveChain.profileHome.stats))) {
+      throw error("The managed profile changed while waiting for removal.", "Rerun remove to review the new state.");
     }
     try {
       await fs.rename(profile.profileHome, removingHome);
@@ -987,13 +1129,19 @@ async function removeCommand(options) {
         "Check its permissions and retry.",
       );
     }
-    const movedStats = await fs.lstat(removingHome);
-    if (movedStats.dev !== finalHomeStats.dev || movedStats.ino !== finalHomeStats.ino) {
+    const afterMoveChain = await validateManagedProfileChain({ managedRoot, provider, name });
+    if (!sameRemovalParentIdentity(initialParentIdentity, removalParentIdentity(afterMoveChain)) ||
+        afterMoveChain.profileHome.stats) {
       throw error(
         `The profile home changed while moving it to '${removingHome}'.`,
-        "Leave T3 stopped and inspect both paths manually.",
+        `Leave T3 stopped and retain '${removingHome}' for manual recovery.`,
       );
     }
+    await validateRemovalHolding({
+      holdingPath: removingHome,
+      chain: afterMoveChain,
+      expectedIdentity: initialHomeIdentity,
+    });
   }
   try {
     await writeRemovedControlFiles({
@@ -1004,33 +1152,43 @@ async function removeCommand(options) {
       nextProfiles,
     });
   } catch (cause) {
-    if (finalHomeStats) {
+    if (finalChain.profileHome.stats) {
       try {
-        if (await lstatOrNull(profile.profileHome)) throw new Error("original profile path is no longer empty");
-        await fs.rename(removingHome, profile.profileHome);
+        await restoreRemovedHome({
+          profileHome: profile.profileHome,
+          holdingPath: removingHome,
+          chain: finalChain,
+          expectedIdentity: initialHomeIdentity,
+        });
       } catch (restoreCause) {
         throw error(
-          `${cause.message} The profile home remains at '${removingHome}': ${restoreCause.message}.`,
+          `${cause.message} The profile home remains at '${removingHome}': ${restoreCause.message}`,
           "Leave T3 stopped and restore the listed paths manually.",
         );
       }
     }
     throw cause;
   }
-  if (finalHomeStats) {
-    const removingStats = await fs.lstat(removingHome);
-    if (removingStats.dev !== finalHomeStats.dev || removingStats.ino !== finalHomeStats.ino) {
+  if (finalChain.profileHome.stats) {
+    const beforeDeleteChain = await validateManagedProfileChain({ managedRoot, provider, name });
+    if (!sameRemovalParentIdentity(initialParentIdentity, removalParentIdentity(beforeDeleteChain)) ||
+        beforeDeleteChain.profileHome.stats) {
       throw error(
-        `The profile was unregistered, but removal path '${removingHome}' changed unexpectedly.`,
-        "Inspect and remove the retained directory manually.",
+        `The profile was unregistered, but removal path '${removingHome}' could not be verified.`,
+        `Retain '${removingHome}' and restore or remove it manually after checking the managed chain.`,
       );
     }
+    await validateRemovalHolding({
+      holdingPath: removingHome,
+      chain: beforeDeleteChain,
+      expectedIdentity: initialHomeIdentity,
+    });
     try {
       await fs.rm(removingHome, { recursive: true });
     } catch {
       throw error(
         `The profile was unregistered, but '${removingHome}' could not be deleted.`,
-        "Delete that retained directory manually.",
+        `Retain '${removingHome}' and delete it manually after checking the managed chain.`,
       );
     }
   }
@@ -1047,6 +1205,14 @@ async function diagnosePlatform(results) {
     return;
   }
   const version = await inspectCommand("sw_vers", ["-productVersion"]);
+  if (version.timedOut) {
+    diagnostic(results, "error", "platform version", "macOS version probe timed out.");
+    return;
+  }
+  if (!version.found) {
+    diagnostic(results, "error", "platform version", "macOS version command was not found.");
+    return;
+  }
   const productVersion = version.found && version.code === 0 ? version.stdout.trim() : "unknown macOS version";
   diagnostic(
     results,
@@ -1068,25 +1234,36 @@ async function diagnoseProvider(results, profile) {
     diagnostic(results, "error", `${label} binary`, `${profile.provider} was not found on PATH.`);
     return;
   }
-  const versionText = `${version.stdout}\n${version.stderr}`.match(/\d+\.\d+\.\d+/)?.[0] ?? "unknown";
-  if (profile.provider === "claude" && versionText === "2.1.235") {
-    diagnostic(results, "pass", `${label} version`, "Claude Code 2.1.235 is tested.");
-  } else if (profile.provider === "claude") {
-    diagnostic(results, "warn", `${label} version`, `Claude Code ${versionText} is untested; 2.1.235 is tested.`);
-  } else {
-    diagnostic(results, "warn", `${label} version`, `Codex ${versionText} is untested.`);
+  if (version.timedOut) {
+    diagnostic(results, "error", `${label} version`, "provider version probe timed out.");
+  }
+  if (!version.timedOut) {
+    const versionText = `${version.stdout}\n${version.stderr}`.match(/\d+\.\d+\.\d+/)?.[0] ?? "unknown";
+    if (profile.provider === "claude" && versionText === "2.1.235") {
+      diagnostic(results, "pass", `${label} version`, "Claude Code 2.1.235 is tested.");
+    } else if (profile.provider === "claude") {
+      diagnostic(results, "warn", `${label} version`, `Claude Code ${versionText} is untested; 2.1.235 is tested.`);
+    } else {
+      diagnostic(results, "warn", `${label} version`, `Codex ${versionText} is untested.`);
+    }
   }
   const auth = await inspectCommand(
     providerBinary(profile.provider),
     providerAuthStatusArguments(profile.provider),
     environment,
   );
-  diagnostic(
-    results,
-    auth.code === 0 ? "pass" : "error",
-    `${label} auth`,
-    auth.code === 0 ? "native CLI reports authenticated." : "native CLI reports missing or invalid authentication; run t3-profile auth.",
-  );
+  if (auth.timedOut) {
+    diagnostic(results, "error", `${label} auth`, "authentication-status probe timed out.");
+  } else if (!auth.found) {
+    diagnostic(results, "error", `${label} auth`, `${profile.provider} was not found on PATH.`);
+  } else {
+    diagnostic(
+      results,
+      auth.code === 0 ? "pass" : "error",
+      `${label} auth`,
+      auth.code === 0 ? "native CLI reports authenticated." : "native CLI reports missing or invalid authentication; run t3-profile auth.",
+    );
+  }
 }
 
 async function diagnoseProfile(results, profile, settings, managedRoot) {
@@ -1099,14 +1276,22 @@ async function diagnoseProfile(results, profile, settings, managedRoot) {
     managedRoot,
   }).instanceId;
   const identityValid = isSamePath(profile.profileHome, expectedHome) && profile.instanceId === expectedInstanceId;
-  const stats = await lstatOrNull(profile.profileHome);
+  let managedChain;
+  try {
+    managedChain = await validateManagedProfileChain({
+      managedRoot,
+      provider: profile.provider,
+      name: profile.name,
+      requireHome: true,
+    });
+  } catch (cause) {
+    diagnostic(results, "error", `${label} home`, cause.message);
+  }
   if (!identityValid) {
     diagnostic(results, "error", `${label} identity`, "registry identity does not match its expected managed path and instance ID.");
-  } else if (!stats || stats.isSymbolicLink() || !stats.isDirectory()) {
-    diagnostic(results, "error", `${label} home`, "managed profile directory is missing or invalid.");
-  } else {
+  } else if (managedChain) {
     try {
-      await fs.access(profile.profileHome, 6);
+      await fs.access(managedChain.profileHome.canonical, 6);
       diagnostic(results, "pass", `${label} home`, "managed profile directory is readable and writable.");
     } catch {
       diagnostic(results, "error", `${label} home`, "managed profile directory is not readable and writable.");
@@ -1138,20 +1323,21 @@ async function diagnoseProfile(results, profile, settings, managedRoot) {
   if (profile.provider === "claude" && profile.sharing === "standard") {
     for (const link of profile.links) {
       const linkName = path.basename(link.destination);
-      try {
-        const destinationStats = await fs.lstat(link.destination);
-        const sourceTarget = await fs.realpath(link.source);
-        const destinationTarget = await fs.realpath(link.destination);
-        if (!destinationStats.isSymbolicLink() || !isSamePath(sourceTarget, destinationTarget)) {
-          throw new Error("missing, not a link, or points to the wrong source");
-        }
+      if (!identityValid || !managedChain) {
+        diagnostic(results, "error", `${label} share ${linkName}`, "live link is invalid: managed profile home is not validated.");
+        continue;
+      }
+      const inspection = await inspectClaudeLink(link, managedChain.profileHome.canonical);
+      if (inspection.ok) {
         diagnostic(results, "pass", `${label} share ${linkName}`, "live link is healthy.");
-      } catch {
-        diagnostic(results, "error", `${label} share ${linkName}`, "live link or source is missing or invalid.");
+      } else {
+        diagnostic(results, "error", `${label} share ${linkName}`, `live link is invalid: ${inspection.message}.`);
       }
     }
   }
-  if (identityValid && stats?.isDirectory()) await diagnoseProvider(results, profile);
+  if (identityValid && managedChain) {
+    await diagnoseProvider(results, { ...profile, profileHome: managedChain.profileHome.canonical });
+  }
 }
 
 async function doctorCommand(options) {

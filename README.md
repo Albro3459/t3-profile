@@ -56,10 +56,11 @@ With a custom `--home`, the stopped-server T3 settings update also points the
 primary/default provider instance to that absolute source path; any conflicting
 value is shown before it is changed.
 
-`--yes` selects standard sharing and skips prompts other than provider
-authentication. On `sync` and `remove`, it confirms that T3 is stopped and
-skips the command's confirmation. `--skip-auth` is the explicit way to create a
-profile without immediately starting native authentication.
+`--yes` selects standard sharing, asserts that T3 is stopped, and accepts the
+command's other confirmations on `add`, `sync`, and `remove`; validation and
+drift checks still run. Native provider CLIs may still prompt.
+`--skip-auth` is the explicit way to create a profile without immediately
+starting native authentication.
 Without `--yes` or `--isolated`, `add` asks whether to use standard sharing.
 Answering no selects isolated mode. Missing optional source resources are
 reported as skipped; they are not created or copied.
@@ -147,17 +148,31 @@ ${T3CODE_HOME:-~/.t3}/userdata/settings.json
 ```
 
 Before mutation, `add` validates the source home and settings file, checks
-collisions and link capabilities, shows the final sharing summary, and asks
-you to confirm that T3 is fully stopped. Quit T3 Code and stop every
-`t3 serve` and `t3 connect` process before answering yes. v1 trusts this
+collisions and link capabilities, shows the final creation/sharing summary,
+and asks you to confirm that T3 is fully stopped. Quit T3 Code and stop every
+`t3 serve` and `t3 connect` process before answering yes. v2 trusts this
 confirmation; it does not inspect or stop processes. The confirmation is:
 
 ```text
 T3 is fully stopped and ready to update? [y/N]
 ```
 
-`sync` and `remove` use the same stopped-T3 boundary before changing settings.
-Cancelling prints `Cancelled. No changes were made.`
+Mutating `sync` prints its deterministic plan and then uses the same stopped-T3
+boundary before final validation and changing settings. `sync --dry-run` and
+an already-synchronized no-op do not show the stopped-T3 prompt or require T3
+to be stopped. `remove` first asks `Permanently remove this profile? [y/N]`,
+then separately asks the stopped-T3 question immediately before final
+validation and mutation. Read-only `list` and `doctor`, and provider-only
+`auth` and `run`, also do not show the stopped-T3 prompt or require T3 to be
+stopped. Declining any shown confirmation prints
+`Cancelled. No changes were made.` and prevents mutation. Declining `remove`'s
+permanent-deletion consent does not continue to the stopped-T3 prompt. Native
+provider CLIs may still prompt.
+
+`--yes` is the non-interactive assertion that T3 is stopped and accepts the
+command's other confirmations. It does not bypass validation or drift checks.
+Confirming that T3 is stopped is separate from consenting to permanent profile
+removal.
 
 T3 settings are backed up under `${T3_PROFILE_HOME:-~/.t3-profile}/backups/`
 and replaced atomically. The tool preserves unmanaged provider instances,
@@ -194,7 +209,9 @@ be rerun later. `auth` remains available for renewal and repair.
 It adds missing managed instances and repairs drift in fields owned by
 `t3-profile`. It preserves unmanaged instances, unknown instance/config fields,
 and unrelated environment entries. It never adopts or deletes an unregistered
-T3 instance. `--dry-run` prints the deterministic change list without writing.
+T3 instance. `--dry-run` prints the deterministic change list without writing
+or prompting. A synchronized no-op also does not prompt or write; a mutating
+sync prints its deterministic plan before asking whether T3 is stopped.
 
 `doctor` is read-only. It checks the platform, registry and settings shape,
 managed/source homes, T3 registration drift, Claude live links, native CLI
@@ -203,9 +220,13 @@ checks all registered profiles; pass a provider and name to narrow it. Errors
 produce a nonzero exit status. Warnings identify untested combinations without
 failing the command.
 
-`remove` unregisters exactly one registry-owned T3 instance, removes its local
-registry entry, and permanently deletes its managed profile home. This includes
-private authentication and local history stored in that home. It never removes
+`remove` first obtains separate consent to permanently remove the profile, then
+confirms that T3 is stopped immediately before mutation. It unregisters exactly
+one registry-owned T3 instance, removes its local registry entry, and
+permanently deletes the managed profile home, including private files and local
+history stored there. Removal does not perform native logout or token
+revocation. Credentials may remain in macOS Keychain or another provider
+credential store until you revoke them or log out separately. It never removes
 the primary source home or unmanaged T3 instances.
 
 ## Security disclosures
