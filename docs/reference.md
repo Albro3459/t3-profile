@@ -12,7 +12,9 @@ t3-profile doctor [<claude|codex> <name>]
 t3-profile remove <claude|codex> <name> [--yes]
 ```
 
-Run `t3-profile --help` for the built-in help.
+Run `t3-profile help` for built-in help. `--help` and `-h` are aliases.
+Run `t3-profile version` to print the installed version. `--version` and `-v`
+are aliases.
 
 Names must match `^[a-z][a-z0-9_-]{0,47}$`. Windows reserved names such as
 `con`, `aux`, `com1`, and `lpt1` are rejected.

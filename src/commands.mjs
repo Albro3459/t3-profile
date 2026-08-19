@@ -80,13 +80,17 @@ import { collectUsage, displayTimezone } from "./usage.mjs";
 
 function requirePositional(command, values, expected) {
   if (values.length !== expected) {
-    throw error(`Invalid arguments for '${command}'.`, `Use 't3-profile --help' for usage.`);
+    throw error(`Invalid arguments for '${command}'.`, `Use 't3-profile help' for usage.`);
   }
 }
 
 export function parseArguments(argv) {
-  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") return { command: "help" };
-  if (argv[0] === "--version" || argv[0] === "-v") return { command: "version" };
+  if (argv.length === 0 || argv[0] === "help" || argv[0] === "--help" || argv[0] === "-h") {
+    return { command: "help" };
+  }
+  if (argv[0] === "version" || argv[0] === "--version" || argv[0] === "-v") {
+    return { command: "version" };
+  }
   const [command, ...rest] = argv;
   if (command === "list") {
     requirePositional(command, rest, 0);
@@ -104,7 +108,7 @@ export function parseArguments(argv) {
     for (const value of rest) {
       if (value === "--dry-run") dryRun = true;
       else if (value === "--yes") yes = true;
-      else throw error(`Unknown option '${value}'.`, "Use 't3-profile --help' for usage.");
+      else throw error(`Unknown option '${value}'.`, "Use 't3-profile help' for usage.");
     }
     return { command, dryRun, yes };
   }
@@ -113,7 +117,7 @@ export function parseArguments(argv) {
     let yes = false;
     for (const value of rest) {
       if (value === "--yes") yes = true;
-      else if (value.startsWith("-")) throw error(`Unknown option '${value}'.`, "Use 't3-profile --help' for usage.");
+      else if (value.startsWith("-")) throw error(`Unknown option '${value}'.`, "Use 't3-profile help' for usage.");
       else positional.push(value);
     }
     requirePositional(command, positional, 2);
@@ -130,7 +134,7 @@ export function parseArguments(argv) {
     requirePositional(command, before, 2);
     return { command, provider: before[0], name: before[1], providerArguments };
   }
-  if (command !== "add") throw error(`Unknown command '${command}'.`, "Use 't3-profile --help' for usage.");
+  if (command !== "add") throw error(`Unknown command '${command}'.`, "Use 't3-profile help' for usage.");
 
   const positional = [];
   let home;
@@ -165,7 +169,7 @@ export function parseArguments(argv) {
       home = value.slice("--home=".length);
       continue;
     }
-    if (value.startsWith("-")) throw error(`Unknown option '${value}'.`, "Use 't3-profile --help' for usage.");
+    if (value.startsWith("-")) throw error(`Unknown option '${value}'.`, "Use 't3-profile help' for usage.");
     positional.push(value);
   }
   requirePositional(command, positional, 2);
@@ -1397,5 +1401,5 @@ export async function dispatch(options) {
   if (options.command === "sync") return syncCommand(options);
   if (options.command === "doctor") return doctorCommand(options);
   if (options.command === "remove") return removeCommand(options);
-  throw error(`Unknown command '${options.command}'.`, "Use 't3-profile --help' for usage.");
+  throw error(`Unknown command '${options.command}'.`, "Use 't3-profile help' for usage.");
 }

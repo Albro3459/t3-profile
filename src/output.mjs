@@ -19,6 +19,8 @@ export function printHelp() {
   writeLine(`t3-profile ${VERSION}
 
 Usage:
+  t3-profile help
+  t3-profile version
   t3-profile add <claude|codex> <name> [--home <path>] [--isolated] [--skip-auth] [--yes]
   t3-profile auth <claude|codex> <name>
   t3-profile run <claude|codex> <name> [-- provider arguments]
@@ -36,9 +38,11 @@ Options:
   --dry-run      Show the changes sync would make without writing them.
   --yes          For add, select standard sharing. For add, sync, or remove,
                  assert that T3 is stopped and accept the command's other
-                 confirmations; validation and drift checks still run.
-  --help         Show this help.
-  --version      Show the version.
+                 confirmations. Validation and drift checks still run.
+  help, --help, -h
+                 Show this help.
+  version, --version, -v
+                 Show the version.
 
 Confirmation behavior:
   add prompts after the creation/sharing summary and before mutation.
@@ -48,7 +52,7 @@ Confirmation behavior:
   T3 is fully stopped and ready to update? [y/N]
   sync --dry-run and synchronized sync no-ops, read-only list and doctor, and
   provider-only auth and run do not show the stopped-T3 prompt or require T3
-  to be stopped. Declining any shown confirmation prevents mutation; declining
+  to be stopped. Declining any shown confirmation prevents mutation. Declining
   remove's destructive consent does not continue to the stopped-T3 prompt.
   Native provider CLIs may still prompt natively.`);
 }

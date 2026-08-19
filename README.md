@@ -41,7 +41,10 @@ t3-profile remove claude personal
 t3-profile doctor
 
 # Show every command and option
-t3-profile --help
+t3-profile help
+
+# Show the installed version
+t3-profile version
 ```
 
 Profile names must start with a lowercase letter. They may contain lowercase
