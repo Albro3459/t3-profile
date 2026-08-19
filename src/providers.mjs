@@ -34,7 +34,7 @@ export function providerBinary(provider) {
 
 export function providerAuthArguments(provider) {
   validateProvider(provider);
-  return provider === "claude" ? ["auth", "login"] : ["login"];
+  return provider === "claude" ? ["auth", "login"] : ["login", "--device-auth"];
 }
 
 export function providerAuthStatusArguments(provider) {

@@ -187,8 +187,11 @@ profile environment:
 
 ```text
 Claude: claude auth login
-Codex:  codex login
+Codex:  codex login --device-auth
 ```
+
+Codex uses device-code authentication by default so the same flow works in
+local, remote, and headless terminals.
 
 `t3-profile` does not inspect, capture, parse, copy, or log credentials. It
 scrubs inherited provider authentication override variables that could bypass
