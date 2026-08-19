@@ -5,6 +5,10 @@ registers them with T3, and delegates authentication to each provider's native
 CLI. `add` now completes creation, sharing, registration, and authentication in
 one flow by default.
 
+## Tested environment
+
+`t3-profile` is tested on macOS with Claude Code and `codex-cli 0.148.0`.
+
 ## Commands
 
 ```text
