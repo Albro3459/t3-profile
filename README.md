@@ -20,9 +20,6 @@ Node.js 20 or newer is required.
 ## Quick start
 
 ```sh
-# Check your setup and find problems
-t3-profile doctor
-
 # Add a profile and authenticate it
 t3-profile add claude personal
 t3-profile add codex work
@@ -39,6 +36,9 @@ t3-profile sync
 
 # Remove a profile, its private auth files, and local history
 t3-profile remove claude personal
+
+# Check your setup and find problems
+t3-profile doctor
 
 # Show every command and option
 t3-profile --help
