@@ -33,7 +33,7 @@ ISO-8601 timestamp. The adapter normalizes `five_hour` to `five_hour` and
 `seven_day` to `week`, then formats both in the invocation's display timezone.
 
 The success fixture is [claude-usage-success.json](../fixtures/claude-usage-success.json).
-The partial fixture omits `seven_day`; the malformed fixture uses an invalid
+The partial fixture omits `seven_day`. The malformed fixture uses an invalid
 percentage and reset timestamp. Invalid fields affect only their labeled
 window. HTTP, credential, timeout, JSON, and unsupported-response failures
 make the complete usage check unavailable.
