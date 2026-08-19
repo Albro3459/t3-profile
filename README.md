@@ -55,10 +55,12 @@ claude    bets  standard  ~/.t3-profile/profiles/claude/bets        5h 100% · r
 codex     work  isolated  ~/.t3-profile/profiles/codex/work         week 65% · resets Aug 20, 8:59 AM America/Chicago
 ```
 
-The current supported Claude CLI envelope returns the `/usage` response as a
-human-formatted string rather than a machine-readable window object. The
-adapter deliberately rejects that unsupported shape, so Claude usage can show
-as `unavailable` until the CLI exposes typed percentage and reset fields.
+Claude usage is fetched from Anthropic's OAuth usage endpoint using the
+selected profile's `claudeAiOauth.accessToken` from `.credentials.json`. The
+endpoint returns typed `five_hour` and `seven_day` utilization percentages and
+reset timestamps. It is undocumented and may be rate-limited or change; any
+credential, network, HTTP, or schema failure renders that profile's usage as
+`unavailable`. The token is never printed or included in diagnostics.
 
 `--home` selects the existing primary provider home used as the sharing
 source. Defaults are `~/.claude` and `~/.codex`. The source is never moved.

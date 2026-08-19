@@ -1,21 +1,10 @@
 {
-  "is_error": false,
-  "duration_api_ms": 0,
-  "num_turns": 1,
-  "stop_reason": null,
-  "session_id": "REDACTED_SESSION_ID",
-  "total_cost_usd": 0,
-  "usage": {},
-  "modelUsage": {},
-  "permission_denials": [],
-  "fast_mode_state": "off",
-  "fast_mode_disabled_reason": "REDACTED",
-  "subtype": "success",
-  "result": {
-    "currentSession": { "usedPercent": 12 },
-    "currentWeek": { "usedPercent": 34 }
+  "five_hour": {
+    "utilization": "12",
+    "resets_at": "not-a-timestamp"
   },
-  "type": "result",
-  "duration_ms": 0,
-  "uuid": "REDACTED_UUID"
+  "seven_day": {
+    "utilization": 34,
+    "resets_at": "2026-08-24T19:59:00Z"
+  }
 }

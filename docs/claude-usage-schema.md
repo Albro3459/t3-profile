@@ -1,30 +1,44 @@
 # Claude usage response schema
 
-The exact command used for the Claude adapter is:
+Claude usage is read from Anthropic's OAuth usage endpoint:
 
 ```text
-claude -p "/usage" --output-format json
+GET https://api.anthropic.com/api/oauth/usage
+Authorization: Bearer <claudeAiOauth.accessToken>
+anthropic-beta: oauth-2025-04-20
 ```
 
-The redacted capture in `fixtures/claude-usage-success.json` was obtained from
-Claude Code 2.1.235 with `CLAUDE_CONFIG_DIR` and
-`CLAUDE_SECURESTORAGE_CONFIG_DIR` set to the managed profile home.
+The access token is read only from the selected managed profile's regular
+`.credentials.json` file. The token is never printed, persisted, or included
+in errors. A missing, redirected, malformed, or unreadable credential file
+makes that profile's usage unavailable.
 
-The top-level response is a JSON object with the usual result envelope fields,
-including `type`, `subtype`, `is_error`, and `result`. In this supported CLI
-version, `result` is a string containing human-formatted text. Its observed
-lines are a current-session percentage and a current-week percentage/reset
-line; it does not expose stable field names, a five-hour object, a weekly
-object, percentage units as typed values, or reset timestamps as typed values.
+The response is a JSON object. The supported window fields are:
 
-This is not a machine-readable schema. The adapter therefore rejects the
-envelope and returns unavailable usage. It must not parse this text with
-regular expressions or depend on its wording, punctuation, locale, or display
-timezone. `fixtures/claude-usage-partial-session.json` records a response with
-one displayed line omitted, and `fixtures/claude-usage-malformed.json` records
-an unsupported object-shaped result. Both are rejected.
+```json
+{
+  "five_hour": {
+    "utilization": 12,
+    "resets_at": "2026-08-19T17:59:00Z"
+  },
+  "seven_day": {
+    "utilization": 34,
+    "resets_at": "2026-08-24T19:59:00Z"
+  }
+}
+```
 
-A future adapter change requires a provider response whose `.result` is a
-documented machine-readable object containing explicit five-hour and weekly
-windows, numeric percentage units, and reset timestamp units. Until then,
-shipping a successful Claude parser would violate the v3 retrieval contract.
+`utilization` is a numeric percentage from 0 through 100. `resets_at` is an
+ISO-8601 timestamp. The adapter normalizes `five_hour` to `five_hour` and
+`seven_day` to `week`, then formats both in the invocation's display timezone.
+
+The success fixture is [claude-usage-success.json](../fixtures/claude-usage-success.json).
+The partial fixture omits `seven_day`; the malformed fixture uses an invalid
+percentage and reset timestamp. Invalid fields affect only their labeled
+window. HTTP, credential, timeout, JSON, and unsupported-response failures
+make the complete usage check unavailable.
+
+This endpoint is undocumented and may be rate-limited or changed by Anthropic.
+The direct API path is intentional: the `claude -p "/usage" --output-format
+json` envelope currently places human-formatted text in `.result`, which is not
+a stable machine-readable schema.
