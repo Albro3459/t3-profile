@@ -1,0 +1,22 @@
+{
+  "name": "t3-profile",
+  "version": "1.0.0",
+  "description": "Manage isolated Claude and Codex subscription profiles for T3 Code",
+  "type": "module",
+  "bin": {
+    "t3-profile": "./bin/t3-profile.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node --check bin/t3-profile.mjs && node --check src/cli.mjs && node --check src/commands.mjs && node --check src/atomic.mjs && node --check src/errors.mjs && node --check src/links.mjs && node --check src/names.mjs && node --check src/paths.mjs && node --check src/providers.mjs && node --check src/registry.mjs && node --check src/settings.mjs && node --check src/output.mjs && node --check src/version.mjs",
+    "lint": "npm run build"
+  }
+}
