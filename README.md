@@ -5,10 +5,6 @@ registers them with T3, and delegates authentication to each provider's native
 CLI. `add` now completes creation, sharing, registration, and authentication in
 one flow by default.
 
-## Tested environment
-
-`t3-profile` is tested on macOS with Claude Code and `codex-cli 0.148.0`.
-
 ## Commands
 
 ```text
@@ -272,11 +268,12 @@ The following combination has been tested:
 
 - macOS 26.5 on ARM
 - Claude Code 2.1.235
+- Codex CLI 0.148.0
 
 The following combinations are explicitly untested and may require platform or
 provider-specific adjustments:
 
-- Codex CLI and Codex profiles on every operating system
+- Codex CLI and Codex profiles on operating systems other than macOS 26.5 on ARM
 - Windows, including link permissions, junction behavior, command shims, and
   atomic replacement under file contention
 - Linux
