@@ -119,7 +119,7 @@ partially shared profile.
 The T3 settings file is resolved from:
 
 ```text
-${T3CODE_HOME:-~/.t3}/settings.json
+${T3CODE_HOME:-~/.t3}/userdata/settings.json
 ```
 
 Before mutation, `add` validates the source home and settings file, checks

@@ -115,6 +115,10 @@ export function t3HomePath() {
   return absolutePath(configured || path.join(os.homedir(), ".t3"));
 }
 
+export function t3SettingsPath() {
+  return path.join(t3HomePath(), "userdata", "settings.json");
+}
+
 export function pathsFor({ provider, name, sourceHome, managedRoot }) {
   validateProvider(provider);
   validateName(name);
@@ -125,7 +129,7 @@ export function pathsFor({ provider, name, sourceHome, managedRoot }) {
     backupsPath: path.join(managedRoot, "backups"),
     profileHome,
     sourceHome,
-    settingsPath: path.join(t3HomePath(), "settings.json"),
+    settingsPath: t3SettingsPath(),
     instanceId: instanceId(provider, name),
   };
 }

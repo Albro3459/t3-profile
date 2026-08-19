@@ -249,6 +249,8 @@ T3CODE_HOME
 ~/.t3
 ```
 
+The settings document is `${T3CODE_HOME:-~/.t3}/userdata/settings.json`.
+
 Update behavior:
 
 - read and validate the raw settings document;
