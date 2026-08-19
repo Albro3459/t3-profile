@@ -106,7 +106,13 @@ export async function preflightLinks({ provider, sharing, sourceHome, profileHom
     );
   }
   for (const resource of resources.available) {
-    if (isSamePath(resource.realSource, resource.destination)) {
+    if (resource.type === "directory" && pathsOverlap(resource.realSource, resource.destination)) {
+      throw error(
+        `The shared Claude directory '${resource.name}' overlaps its managed destination.`,
+        "Choose a different managed root.",
+      );
+    }
+    if (resource.type === "file" && isSamePath(resource.realSource, resource.destination)) {
       throw error(
         `The shared Claude resource '${resource.name}' would link to itself.`,
         "Choose a different managed root.",
@@ -117,15 +123,139 @@ export async function preflightLinks({ provider, sharing, sourceHome, profileHom
   for (const type of kinds) await probeLink(type);
 }
 
-async function resolveExistingLink(destination) {
-  const target = await fs.readlink(destination);
-  return path.resolve(path.dirname(destination), target);
+function resourceTypeMatches(stats, type) {
+  return type === "directory" ? stats.isDirectory() : stats.isFile();
+}
+
+async function revalidateSource(resource) {
+  let realSource;
+  try {
+    realSource = await fs.realpath(resource.source);
+  } catch (cause) {
+    if (cause?.code === "ENOENT" || cause?.code === "ENOTDIR") {
+      throw error(
+        `The shared Claude resource '${resource.name}' is no longer available.`,
+        "Restore it and retry.",
+      );
+    }
+    throw error(
+      `Cannot resolve shared Claude resource '${resource.source}'.`,
+      "Check its permissions and retry.",
+    );
+  }
+
+  let stats;
+  try {
+    stats = await fs.stat(resource.source);
+  } catch (cause) {
+    if (cause?.code === "ENOENT" || cause?.code === "ENOTDIR") {
+      throw error(
+        `The shared Claude resource '${resource.name}' is no longer available.`,
+        "Restore it and retry.",
+      );
+    }
+    throw error(
+      `Cannot inspect shared Claude resource '${resource.source}'.`,
+      "Check its permissions and retry.",
+    );
+  }
+  if (!resourceTypeMatches(stats, resource.type)) {
+    throw error(
+      `The shared Claude resource '${resource.name}' changed type while preparing the profile.`,
+      "Restore the original resource and retry.",
+    );
+  }
+  if (resource.realSource !== undefined && !isSamePath(realSource, resource.realSource)) {
+    throw error(
+      `The shared Claude resource '${resource.name}' changed while preparing the profile.`,
+      "Rerun add to review the new source target.",
+    );
+  }
+  return { ...resource, realSource };
+}
+
+function assertSafeClaudeResource(resource) {
+  if (resource.type === "directory" && pathsOverlap(resource.realSource, resource.destination)) {
+    throw error(
+      `The shared Claude directory '${resource.name}' overlaps its managed destination.`,
+      "Choose a different managed root.",
+    );
+  }
+  if (resource.type === "file" && isSamePath(resource.realSource, resource.destination)) {
+    throw error(
+      `The shared Claude resource '${resource.name}' would link to itself.`,
+      "Choose a different managed root.",
+    );
+  }
+}
+
+async function existingLinkTarget(destination) {
+  try {
+    return await fs.realpath(destination);
+  } catch (cause) {
+    if (cause?.code === "ENOENT" || cause?.code === "ENOTDIR") {
+      throw error(
+        `The managed Claude link '${destination}' is broken.`,
+        "Move it aside or choose a new profile name.",
+      );
+    }
+    throw error(
+      `Cannot resolve managed Claude link '${destination}'.`,
+      "Check its permissions and retry.",
+    );
+  }
+}
+
+async function verifyLink(resource) {
+  const stats = await fs.lstat(resource.destination).catch((cause) => {
+    if (cause?.code === "ENOENT" || cause?.code === "ENOTDIR") return null;
+    throw cause;
+  });
+  if (!stats?.isSymbolicLink()) {
+    throw error(
+      `The managed Claude link '${resource.destination}' is missing or is not a link.`,
+      "Restore the link or retry with a new profile name.",
+    );
+  }
+  const target = await existingLinkTarget(resource.destination);
+  if (!isSamePath(target, resource.realSource)) {
+    throw error(
+      `The managed Claude link '${resource.destination}' points to an unexpected source.`,
+      "Move it aside or choose a new profile name.",
+    );
+  }
+  const targetStats = await fs.stat(resource.destination).catch((cause) => {
+    if (cause?.code === "ENOENT" || cause?.code === "ENOTDIR") return null;
+    throw cause;
+  });
+  if (!targetStats || !resourceTypeMatches(targetStats, resource.type)) {
+    throw error(
+      `The managed Claude link '${resource.destination}' has an unexpected type.`,
+      "Restore the source resource and retry.",
+    );
+  }
+  return resource.destination;
+}
+
+export async function verifyClaudeLinks(resources) {
+  const verified = [];
+  for (const resource of resources) verified.push(await verifyLink(resource));
+  return verified;
 }
 
 export async function createLinks(resources) {
   const created = [];
   try {
+    const validatedResources = [];
     for (const resource of resources) {
+      const validated = await revalidateSource(resource);
+      assertSafeClaudeResource(validated);
+      validatedResources.push(validated);
+    }
+    for (let index = 0; index < validatedResources.length; index += 1) {
+      const resource = await revalidateSource(validatedResources[index]);
+      assertSafeClaudeResource(resource);
+      validatedResources[index] = resource;
       const existing = await fs.lstat(resource.destination).catch((cause) => {
         if (cause?.code === "ENOENT" || cause?.code === "ENOTDIR") return null;
         throw cause;
@@ -137,7 +267,7 @@ export async function createLinks(resources) {
             "Move it aside or choose a new profile name.",
           );
         }
-        const existingTarget = await resolveExistingLink(resource.destination);
+        const existingTarget = await existingLinkTarget(resource.destination);
         if (!isSamePath(existingTarget, resource.realSource)) {
           throw error(
             `The managed Claude link '${resource.destination}' points to an unexpected source.`,
@@ -149,16 +279,28 @@ export async function createLinks(resources) {
       await fs.symlink(resource.source, resource.destination, linkKind(resource.type));
       created.push(resource.destination);
     }
+    await verifyClaudeLinks(validatedResources);
     return created;
   } catch (cause) {
-    await rollbackLinks(created);
+    const rollbackFailures = await rollbackLinks(created);
+    cause.createdLinks = [...created];
+    if (rollbackFailures.length > 0) cause.linkRollbackFailures = rollbackFailures;
     throw cause;
   }
 }
 
 export async function rollbackLinks(created) {
+  const failures = [];
   for (const destination of [...created].reverse()) {
-    const stats = await fs.lstat(destination).catch(() => null);
-    if (stats?.isSymbolicLink()) await fs.unlink(destination).catch(() => {});
+    try {
+      const stats = await fs.lstat(destination).catch((cause) => {
+        if (cause?.code === "ENOENT" || cause?.code === "ENOTDIR") return null;
+        throw cause;
+      });
+      if (stats?.isSymbolicLink()) await fs.unlink(destination);
+    } catch (cause) {
+      failures.push({ path: destination, cause });
+    }
   }
+  return failures;
 }

@@ -2,104 +2,98 @@
 
 Scope: `TODO/plan.md` against commits `6a62fa0`, `abf40a4`, and `c061f07`.
 
-## High priority
+## Findings and resolutions
 
-### TODO: Re-read and merge T3 settings after stopped-server confirmation
+### Resolved: Re-read and merge T3 settings after stopped-server confirmation
 
-`prepareAdd` reads `settings.json` and builds `nextSettings` before the user is
-asked to stop T3 (`src/commands.mjs:173-174`, `src/commands.mjs:240-249`, and
-`src/commands.mjs:275-289`). `mutateAdd` later writes that pre-confirmation
-snapshot (`src/commands.mjs:322-327`).
+`prepareAdd` now records only the confirmed intent and summary snapshot.
+`finalizeAdd` re-resolves the managed root and source, re-reads settings and
+the registry, reruns collision and link checks, rejects summary-relevant drift,
+and builds the final settings and registry documents from the post-confirmation
+state. Unrelated settings and registry changes are preserved.
 
-In the normal interactive flow, T3 can still be running when the snapshot is
-taken and can write settings while shutting down. A successful `add` then
-overwrites those newer unmanaged instances, opaque configuration, or sensitive
-redaction metadata. The backup captures the current file, but success does not
-detect the stale merge. Re-read after confirmation, reject/reconfirm changed
-conflicts, and build the final merge from the stopped-server document.
+Resolving code: `src/commands.mjs` (`prepareAdd`, `finalizeAdd`,
+`validateAddState`).
 
-### TODO: Use the provider-specific native authentication command
+### Resolved: Use the provider-specific native authentication command
 
-`authCommand` always passes `['auth', 'login']` (`src/commands.mjs:403-412`).
-That is correct for Claude, but the plan requires `codex login`, not
-`codex auth login`. Codex profile authentication currently launches the wrong
-command.
+`providerAuthArguments` returns `auth login` for Claude and `login` for Codex,
+and `authCommand` uses that provider-specific argument list.
 
-### TODO: Make rollback complete and report cleanup failures
+Resolving code: `src/providers.mjs` (`providerAuthArguments`) and
+`src/commands.mjs` (`authCommand`).
 
-The rollback path is not failure-safe (`src/commands.mjs:352-360`). If registry
-restoration throws, settings restoration and filesystem cleanup are skipped.
-Settings restoration errors are swallowed, after which the profile directory
-can be removed while T3 still points to it. Other cleanup failures are also
-discarded, so the reported error does not tell the user that manual recovery is
-required.
+### Resolved: Make rollback complete and report cleanup failures
 
-Attempt every rollback step, retain all cleanup errors, and leave/recover the
-state in an order that cannot silently pair modified T3 settings with a deleted
-profile.
+`rollbackAdd` attempts settings and registry restoration independently, then
+jointly re-reads both control files before removing any profile artifacts. It
+retains the profile when either file cannot be restored or verified and reports
+each failed step plus the settings backup path. Claude link rollback returns
+its created-link state and failures instead of swallowing unlink errors, so the
+outer transaction can retry and report exact cleanup paths.
 
-### TODO: Create the profile leaf exclusively before treating it as owned
+Resolving code: `src/commands.mjs` (`rollbackAdd`, `removeCreatedArtifacts`,
+`mutateAdd`) and `src/links.mjs` (`createLinks`, `rollbackLinks`).
 
-The existence check happens before interactive prompts
-(`src/commands.mjs:209-213`), but mutation later uses recursive `mkdir` and
-unconditionally sets `profileCreated = true` (`src/commands.mjs:292-301`). If
-the directory appears during that window, `mkdir` accepts it as existing. On a
-later failure, `removeCreatedPath` recursively deletes the entire directory,
-including content the tool did not create (`src/commands.mjs:352-360` and
-`src/atomic.mjs:72-74`). This violates the collision and rollback ownership
-rules.
+### Resolved: Create the profile leaf exclusively before treating it as owned
 
-Create parent directories separately, create the profile leaf with exclusive
-semantics, and only remove it when that exact operation created it.
+`ensureDirectoryChain` creates and tracks only missing parent directories.
+`mutateAdd` creates the profile leaf with one non-recursive `mkdir` call and
+records ownership only after that call succeeds. Rollback removes only recorded
+links and empty directories; it never recursively removes profile content.
 
-### TODO: Do not describe the Windows replacement fallback as atomic
+Resolving code: `src/commands.mjs` (`ensureDirectoryChain`,
+`mutateAdd`, `removeCreatedArtifacts`).
 
-On Windows, `replaceTarget` moves the existing target aside and then renames
-the temporary file into place (`src/atomic.mjs:13-29`). A crash or interruption
-between those two renames leaves `settings.json` absent. That does not meet the
-plan's atomic settings replacement requirement. Use a Windows-safe replacement
-primitive or explicitly redesign the operation around a recoverable journal
-that is repaired before any later command proceeds.
+### Resolved: Do not describe the Windows replacement fallback as atomic
 
-## Medium priority
+Atomic writes now stage and fsync a same-directory temporary file, then use one
+replacing rename. The move-aside fallback is gone. Windows rename contention
+retries only the documented transient errors and leaves the original target in
+place on persistent failure. Content-checked writes stage first and re-read the
+target immediately before replacement; rollback restores use the same guard.
 
-### TODO: Validate the known T3 provider-instance envelope
+Resolving code: `src/atomic.mjs` (`stageFile`, `replaceTarget`,
+`writeAtomicIfUnchanged`, `restoreAtomicIfUnchanged`).
 
-`validateSettingsDocument` accepts a provider instance with no `driver` and
-accepts any array contents as `environment` (`src/settings.mjs:14-35`). Such a
-document passes preflight, is rewritten, and can still be rejected by T3's
-settings decoder after restart. Validate the known envelope fields and
-environment-entry shape while continuing to preserve driver-specific `config`
-as opaque data.
+### Resolved: Validate the known T3 provider-instance envelope
 
-### TODO: Revalidate and verify the Claude link layout at mutation time
+Settings validation now checks provider-instance IDs and drivers, optional
+display fields, enabled flags, and environment entry names, values, and flags.
+The driver-specific `config` object and unknown envelope properties remain
+opaque and round-trip unchanged.
 
-Claude resources are inspected before the sharing and stopped-server prompts
-(`src/commands.mjs:219-238`), but the source types/targets are not rechecked and
-the resulting links are not verified after creation
-(`src/commands.mjs:300-351`). A source can disappear or change during the
-prompt window, allowing a broken or unintended link to be registered as a
-successful profile. Revalidate immediately before mutation and verify every
-recorded link before settings/registry success is reported.
+Resolving code: `src/settings.mjs` (`validateSettingsDocument`,
+`validateEnvironment`, `validateSlug`).
 
-### TODO: Reject directory-link cycles, not only exact identity
+### Resolved: Revalidate and verify the Claude link layout at mutation time
 
-Claude link preflight compares each resolved source only for exact equality
-with its destination (`src/links.mjs:108-115`). A shared directory symlink can
-resolve to an ancestor of the managed destination and create a cycle without
-being equal to it. Apply an overlap/ancestor check to resolved directory
-sources as required by the live-link safety policy.
+Claude resources are re-resolved and type-checked immediately before link
+creation. Existing links are compared through `realpath`, directory source
+overlaps are rejected, and every link is verified before control files are
+written. Partial link creation carries its created destinations into the
+transaction rollback path.
 
-### TODO: Support Windows command shims for provider execution
+Resolving code: `src/links.mjs` (`revalidateSource`, `assertSafeClaudeResource`,
+`createLinks`, `verifyClaudeLinks`) and `src/commands.mjs` (`mutateAdd`).
 
-Provider execution uses bare `claude` or `codex` with `spawn` and no shell
-(`src/providers.mjs:29-31` and `src/commands.mjs:389-399`). On Windows,
-installations exposed through npm-style `.cmd` shims are not directly
-executable by this form, so `auth` and `run` can fail even when the provider CLI
-is on `PATH`. Resolve an executable safely for the platform without introducing
-shell argument interpolation.
+### Resolved: Support Windows command shims for provider execution
+
+Provider execution now uses `cross-spawn@7.0.6` with an argument array,
+`shell: false`, inherited stdio, and the existing actionable error/exit-code
+mapping. This supports PATH and Windows `.cmd` shims without concatenating or
+shell-interpolating provider arguments.
+
+Resolving code: `src/process.mjs` (`runProvider`), `src/commands.mjs`
+(`authCommand`, `runCommand`), `package.json`, and `package-lock.json`.
 
 ## Validation
 
-- `npm run build` passes.
-- No tests were added or run, matching the v1 plan's explicit test constraint.
+- `npm run build` passes, including syntax checks for the new process module.
+- `npm run start -- --help` and `npm run start -- --version` pass.
+- `git diff --check` passes.
+- The final focused review found and the implementation resolved the remaining
+  link rollback-state, immediately-before-replacement, joint-rollback-
+  verification, lockfile, and review-completion issues.
+- No automated tests were added or run, matching the v1 plan's explicit test
+  constraint. Windows-only contention and shim checks require a Windows host.

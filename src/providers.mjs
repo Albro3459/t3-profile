@@ -1,4 +1,4 @@
-import { providerDriver, providerTitle } from "./names.mjs";
+import { providerDriver, providerTitle, validateProvider } from "./names.mjs";
 
 const AUTH_OVERRIDE_VARIABLES = {
   claude: [
@@ -28,6 +28,11 @@ export function makeEnvironment(provider, profileHome, baseEnvironment = process
 
 export function providerBinary(provider) {
   return provider;
+}
+
+export function providerAuthArguments(provider) {
+  validateProvider(provider);
+  return provider === "claude" ? ["auth", "login"] : ["login"];
 }
 
 export function buildT3Instance({ provider, profileHome, sourceHome, sharing }) {

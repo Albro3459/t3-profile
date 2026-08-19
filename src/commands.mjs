@@ -1,14 +1,17 @@
-import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
-import { existingMode, removeCreatedPath, writeAtomic, writeJsonAtomic } from "./atomic.mjs";
-import { CancelledError, error } from "./errors.mjs";
-import { createLinks, inspectClaudeResources, preflightLinks, rollbackLinks } from "./links.mjs";
 import {
-  instanceId,
-  providerDriver,
+  existingMode,
+  readCurrentFile,
+  restoreAtomicIfUnchanged,
+  writeAtomicIfUnchanged,
+} from "./atomic.mjs";
+import { CancelledError, error } from "./errors.mjs";
+import { createLinks, inspectClaudeResources, preflightLinks, verifyClaudeLinks } from "./links.mjs";
+import {
   providerTitle,
   validateName,
   validateProvider,
@@ -23,7 +26,14 @@ import {
   requireFile,
   resolveManagedRoot,
 } from "./paths.mjs";
-import { makeEnvironment, buildT3Instance, providerBinary, sharingSummary } from "./providers.mjs";
+import {
+  makeEnvironment,
+  buildT3Instance,
+  providerAuthArguments,
+  providerBinary,
+  sharingSummary,
+} from "./providers.mjs";
+import { runProvider } from "./process.mjs";
 import {
   findByInstanceId,
   findProfile,
@@ -35,14 +45,11 @@ import {
   buildNextSettings,
   primaryHomeValues,
   readSettingsDocument,
-  restoreSettings,
-  verifySettings,
 } from "./settings.mjs";
 import {
   printAddSummary,
   printCreated,
   printList,
-  writeLine,
 } from "./output.mjs";
 
 function requirePositional(command, values, expected) {
@@ -163,16 +170,7 @@ function settingsPrimarySummary(document, provider) {
   return primaryHomeValues(document, provider).map((entry) => ({ ...entry, provider }));
 }
 
-async function prepareAdd(options) {
-  const provider = validateProvider(options.provider);
-  const name = validateName(options.name);
-  const managedRoot = await resolveManagedRoot();
-  const sourceHome = await requireDirectory(options.home ?? defaultSource(provider), "Primary home");
-  const paths = pathsFor({ provider, name, sourceHome, managedRoot });
-  await requireFile(paths.settingsPath, "T3 settings");
-  const registry = await readRegistry(paths.registryPath);
-  const settings = await readSettingsDocument(paths.settingsPath);
-
+async function validateAddState({ provider, name, managedRoot, sourceHome, paths, registry, settings }) {
   if (findProfile(registry.profiles, provider, name)) {
     throw error(`Profile '${provider} ${name}' already exists.`, "Choose a different profile name.");
   }
@@ -215,6 +213,32 @@ async function prepareAdd(options) {
   if (isSamePath(sourceHome, paths.profileHome)) {
     throw error("The source home and profile home are the same path.", "Choose a different managed root.");
   }
+}
+
+function resourceSnapshot(resources) {
+  return {
+    available: resources.available.map((resource) => ({
+      name: resource.name,
+      source: resource.source,
+      realSource: resource.realSource,
+      destination: resource.destination,
+      type: resource.type,
+    })),
+    skipped: [...resources.skipped],
+  };
+}
+
+async function prepareAdd(options) {
+  const provider = validateProvider(options.provider);
+  const name = validateName(options.name);
+  const sourceInput = options.home ?? defaultSource(provider);
+  const managedRoot = await resolveManagedRoot();
+  const sourceHome = await requireDirectory(sourceInput, "Primary home");
+  const paths = pathsFor({ provider, name, sourceHome, managedRoot });
+  await requireFile(paths.settingsPath, "T3 settings");
+  const registry = await readRegistry(paths.registryPath);
+  const settings = await readSettingsDocument(paths.settingsPath);
+  await validateAddState({ provider, name, managedRoot, sourceHome, paths, registry, settings });
 
   let sharing = options.isolated ? "isolated" : "standard";
   let resources = { available: [], skipped: [] };
@@ -237,30 +261,27 @@ async function prepareAdd(options) {
     resources,
   });
 
-  const instance = buildT3Instance({ provider, profileHome: paths.profileHome, sourceHome, sharing });
-  const nextSettings = buildNextSettings({
-    document: settings.value,
-    provider,
-    sourceHome,
-    profileHome: paths.profileHome,
-    instanceId: paths.instanceId,
-    instance,
-    customHome: options.home !== undefined,
-  });
+  const primaryValues = options.home === undefined ? [] : settingsPrimarySummary(settings.value, provider);
   return {
     ...options,
     provider,
     name,
+    sourceInput,
     sharing,
     managedRoot,
     sourceHome,
     paths,
     registry,
     settings,
-    nextSettings,
-    instance,
     resources,
-    primaryValues: options.home === undefined ? [] : settingsPrimarySummary(settings.value, provider),
+    primaryValues,
+    summarySnapshot: {
+      sourceHome,
+      managedRoot,
+      sharing,
+      resources: resourceSnapshot(resources),
+      primaryValues,
+    },
     summary: sharingSummary({
       provider,
       sharing,
@@ -269,6 +290,94 @@ async function prepareAdd(options) {
         skipped: resources.skipped,
       }),
     }),
+  };
+}
+
+async function finalizeAdd(intent) {
+  const managedRoot = await resolveManagedRoot();
+  if (!isSamePath(managedRoot, intent.managedRoot)) {
+    throw error(
+      "The managed root changed while waiting for T3 to stop.",
+      "Rerun add to review the new state.",
+    );
+  }
+  const sourceHome = await requireDirectory(intent.sourceInput, "Primary home");
+  if (!isSamePath(sourceHome, intent.sourceHome)) {
+    throw error(
+      "The primary home changed while waiting for T3 to stop.",
+      "Rerun add to review the new state.",
+    );
+  }
+  const paths = pathsFor({
+    provider: intent.provider,
+    name: intent.name,
+    sourceHome,
+    managedRoot,
+  });
+  await requireFile(paths.settingsPath, "T3 settings");
+  const registry = await readRegistry(paths.registryPath);
+  const settings = await readSettingsDocument(paths.settingsPath);
+  await validateAddState({
+    provider: intent.provider,
+    name: intent.name,
+    managedRoot,
+    sourceHome,
+    paths,
+    registry,
+    settings,
+  });
+
+  const resources = intent.provider === "claude" && intent.sharing === "standard"
+    ? await inspectClaudeResources(sourceHome, paths.profileHome)
+    : { available: [], skipped: [] };
+  await preflightLinks({
+    provider: intent.provider,
+    sharing: intent.sharing,
+    sourceHome,
+    profileHome: paths.profileHome,
+    resources,
+  });
+  const primaryValues = intent.home === undefined ? [] : settingsPrimarySummary(settings.value, intent.provider);
+  const currentSnapshot = {
+    sourceHome,
+    managedRoot,
+    sharing: intent.sharing,
+    resources: resourceSnapshot(resources),
+    primaryValues,
+  };
+  if (!isDeepStrictEqual(currentSnapshot, intent.summarySnapshot)) {
+    throw error(
+      "Inputs changed while waiting for T3 to stop.",
+      "Rerun add to review the new state.",
+    );
+  }
+
+  const instance = buildT3Instance({
+    provider: intent.provider,
+    profileHome: paths.profileHome,
+    sourceHome,
+    sharing: intent.sharing,
+  });
+  const nextSettings = buildNextSettings({
+    document: settings.value,
+    provider: intent.provider,
+    sourceHome,
+    profileHome: paths.profileHome,
+    instanceId: paths.instanceId,
+    instance,
+    customHome: intent.home !== undefined,
+  });
+  return {
+    ...intent,
+    managedRoot,
+    sourceHome,
+    paths,
+    registry,
+    settings,
+    resources,
+    primaryValues,
+    instance,
+    nextSettings,
   };
 }
 
@@ -289,81 +398,259 @@ async function confirmStopped(prepared) {
   if (!confirmed) throw new CancelledError();
 }
 
-async function mutateAdd(prepared) {
-  const { paths, registry, settings } = prepared;
-  const createdLinks = [];
-  let profileCreated = false;
-  let settingsChanged = false;
-  let registryChanged = false;
-  const registryMode = await existingMode(paths.registryPath, 0o600);
+async function ensureDirectoryChain(target) {
+  const missing = [];
+  let current = path.resolve(target);
+  while (true) {
+    const stats = await lstatOrNull(current);
+    if (stats) {
+      if (stats.isSymbolicLink() || !stats.isDirectory()) {
+        throw error(
+          `Managed profile parent '${current}' is not a regular directory.`,
+          "Move it aside or choose a different T3_PROFILE_HOME.",
+        );
+      }
+      break;
+    }
+    missing.push(current);
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  const created = [];
+  for (const directory of missing.reverse()) {
+    try {
+      await fs.mkdir(directory, { mode: 0o700 });
+      created.push(directory);
+    } catch (cause) {
+      if (cause?.code !== "EEXIST") throw cause;
+      const stats = await lstatOrNull(directory);
+      if (!stats || stats.isSymbolicLink() || !stats.isDirectory()) throw cause;
+    }
+  }
+  return created;
+}
+
+function sameRaw(current, expectedRaw) {
+  return expectedRaw === null ? !current.exists : current.exists && current.raw === expectedRaw;
+}
+
+async function removeCreatedArtifacts(prepared, mutation, failures) {
+  const expectedByDestination = new Map(
+    prepared.resources.available.map((resource) => [resource.destination, resource]),
+  );
+  for (const destination of [...mutation.createdLinks].reverse()) {
+    try {
+      const stats = await fs.lstat(destination).catch((cause) => {
+        if (cause?.code === "ENOENT" || cause?.code === "ENOTDIR") return null;
+        throw cause;
+      });
+      if (!stats) continue;
+      if (!stats.isSymbolicLink()) {
+        failures.push({ step: "remove link", path: destination, cause: new Error("destination is no longer a link") });
+        continue;
+      }
+      const expected = expectedByDestination.get(destination);
+      if (expected && !isSamePath(await fs.realpath(destination), expected.realSource)) {
+        failures.push({ step: "remove link", path: destination, cause: new Error("link target changed") });
+        continue;
+      }
+      await fs.unlink(destination);
+    } catch (cause) {
+      failures.push({ step: "remove link", path: destination, cause });
+    }
+  }
+  for (const directory of [...mutation.createdDirectories].reverse()) {
+    try {
+      await fs.rmdir(directory);
+    } catch (cause) {
+      if (cause?.code === "ENOENT") continue;
+      if (cause?.code === "ENOTEMPTY" || cause?.code === "EEXIST") {
+        if (directory === prepared.paths.profileHome) {
+          failures.push({ step: "remove profile directory", path: directory, cause });
+        }
+        continue;
+      }
+      failures.push({ step: "remove directory", path: directory, cause });
+    }
+  }
+}
+
+function rollbackError(cause, failures, backupPath) {
+  const details = failures.map(({ step, path: target, cause: failure }) =>
+    `${step} '${target}': ${failure instanceof Error ? failure.message : String(failure)}`,
+  );
+  if (backupPath) details.push(`settings backup: '${backupPath}'`);
+  return error(
+    `Add failed: ${cause instanceof Error ? cause.message : String(cause)} Rollback incomplete: ${details.join("; ")}.`,
+    "Leave T3 stopped, restore the listed files, then retry.",
+  );
+}
+
+async function rollbackAdd(prepared, mutation, cause) {
+  const failures = [];
+  if (mutation.settings) {
+    try {
+      await restoreAtomicIfUnchanged(
+        prepared.paths.settingsPath,
+        mutation.settings.writtenRaw,
+        mutation.settings.originalRaw,
+        mutation.settings.originalMode,
+        "T3 settings",
+      );
+    } catch (restoreCause) {
+      failures.push({ step: "restore settings", path: prepared.paths.settingsPath, cause: restoreCause });
+    }
+  }
+  if (mutation.registry) {
+    try {
+      await restoreAtomicIfUnchanged(
+        prepared.paths.registryPath,
+        mutation.registry.writtenRaw,
+        mutation.registry.originalRaw,
+        mutation.registry.originalMode,
+        "profile registry",
+      );
+    } catch (restoreCause) {
+      failures.push({ step: "restore registry", path: prepared.paths.registryPath, cause: restoreCause });
+    }
+  }
+
+  const settingsOriginalRaw = mutation.settings?.originalRaw ?? prepared.settings.raw;
+  const registryOriginalRaw = mutation.registry?.originalRaw ?? prepared.registry.raw;
+  let settingsRestored = false;
+  let registryRestored = false;
   try {
-    await fs.mkdir(paths.profileHome, { recursive: true, mode: 0o700 });
-    profileCreated = true;
+    settingsRestored = sameRaw(
+      await readCurrentFile(prepared.paths.settingsPath, "T3 settings"),
+      settingsOriginalRaw,
+    );
+    if (!settingsRestored) throw new Error("contents do not match the original");
+  } catch (verifyCause) {
+    failures.push({ step: "verify settings rollback", path: prepared.paths.settingsPath, cause: verifyCause });
+  }
+  try {
+    registryRestored = sameRaw(
+      await readCurrentFile(prepared.paths.registryPath, "profile registry"),
+      registryOriginalRaw,
+    );
+    if (!registryRestored) throw new Error("contents do not match the original");
+  } catch (verifyCause) {
+    failures.push({ step: "verify registry rollback", path: prepared.paths.registryPath, cause: verifyCause });
+  }
+  if (settingsRestored && registryRestored) {
+    await removeCreatedArtifacts(prepared, mutation, failures);
+  }
+  if (failures.length > 0) throw rollbackError(cause, failures, mutation.backupPath);
+  throw cause;
+}
+
+async function mutateAdd(prepared) {
+  const mutation = {
+    createdDirectories: [],
+    createdLinks: [],
+    settings: null,
+    registry: null,
+    backupPath: undefined,
+  };
+  try {
+    mutation.createdDirectories.push(
+      ...(await ensureDirectoryChain(path.join(prepared.managedRoot, "profiles", prepared.provider))),
+    );
+    try {
+      await fs.mkdir(prepared.paths.profileHome, { mode: 0o700 });
+      mutation.createdDirectories.push(prepared.paths.profileHome);
+    } catch (cause) {
+      if (cause?.code === "EEXIST") {
+        throw error(
+          `Profile home '${prepared.paths.profileHome}' already exists.`,
+          "Move it aside or choose a different profile name.",
+        );
+      }
+      throw cause;
+    }
+
     if (prepared.provider === "claude" && prepared.sharing === "standard") {
-      createdLinks.push(...await createLinks(prepared.resources.available.map((resource) => ({
-        ...resource,
-        source: resource.source,
-      }))));
+      try {
+        mutation.createdLinks.push(...await createLinks(prepared.resources.available));
+      } catch (linkCause) {
+        for (const destination of linkCause?.createdLinks ?? []) {
+          if (!mutation.createdLinks.includes(destination)) mutation.createdLinks.push(destination);
+        }
+        throw linkCause;
+      }
+      await verifyClaudeLinks(prepared.resources.available);
     }
     const registryEntry = {
       provider: prepared.provider,
       name: prepared.name,
       sourceHome: prepared.sourceHome,
-      profileHome: paths.profileHome,
+      profileHome: prepared.paths.profileHome,
       sharing: prepared.sharing,
       links: prepared.resources.available.map((resource) => ({
         source: resource.source,
         destination: resource.destination,
         type: resource.type,
       })),
-      instanceId: paths.instanceId,
+      instanceId: prepared.paths.instanceId,
       createdAt: new Date().toISOString(),
     };
-    await backupAndWriteSettings({
-      settingsPath: paths.settingsPath,
-      backupsPath: paths.backupsPath,
-      raw: settings.raw,
-      next: prepared.nextSettings,
-    });
-    settingsChanged = true;
-    await writeJsonAtomic(
-      paths.registryPath,
-      serializeRegistry([...registry.profiles, registryEntry]),
+    const nextProfiles = [...prepared.registry.profiles, registryEntry];
+    const registryRaw = `${JSON.stringify(serializeRegistry(nextProfiles), null, 2)}\n`;
+    const registryMode = await existingMode(prepared.paths.registryPath, 0o600);
+
+    let settingsResult;
+    try {
+      settingsResult = await backupAndWriteSettings({
+        settingsPath: prepared.paths.settingsPath,
+        backupsPath: prepared.paths.backupsPath,
+        expectedRaw: prepared.settings.raw,
+        next: prepared.nextSettings,
+      });
+    } catch (settingsCause) {
+      if (settingsCause?.backupPath) mutation.backupPath = settingsCause.backupPath;
+      throw settingsCause;
+    }
+    mutation.backupPath = settingsResult.backupPath;
+    mutation.settings = {
+      originalRaw: prepared.settings.raw,
+      originalMode: prepared.settings.mode,
+      writtenRaw: settingsResult.writtenRaw,
+    };
+    await writeAtomicIfUnchanged(
+      prepared.paths.registryPath,
+      prepared.registry.raw,
+      registryRaw,
       registryMode,
+      "profile registry",
     );
-    registryChanged = true;
-    await verifySettings(
-      paths.settingsPath,
-      paths.instanceId,
-      prepared.instance,
-      prepared.home === undefined
-        ? []
-        : primaryHomeValues(prepared.nextSettings, prepared.provider).map((value) => ({
-            ...value,
-            provider: prepared.provider,
-            expected: prepared.sourceHome,
-          })),
-    );
-    const writtenRegistry = await readRegistry(paths.registryPath);
-    if (!findProfile(writtenRegistry.profiles, prepared.provider, prepared.name)) {
+    mutation.registry = {
+      originalRaw: prepared.registry.raw,
+      originalMode: registryMode,
+      writtenRaw: registryRaw,
+    };
+
+    const writtenSettings = await readSettingsDocument(prepared.paths.settingsPath);
+    if (!isDeepStrictEqual(writtenSettings.value, prepared.nextSettings)) {
+      throw error("T3 settings verification failed.", "Restore the settings backup and retry.");
+    }
+    const writtenRegistry = await readRegistry(prepared.paths.registryPath);
+    if (!isDeepStrictEqual(writtenRegistry.profiles, nextProfiles)) {
       throw error("Profile registry verification failed.", "Restore the settings backup and retry.");
+    }
+    if (prepared.provider === "claude" && prepared.sharing === "standard") {
+      await verifyClaudeLinks(prepared.resources.available);
     }
     return registryEntry;
   } catch (cause) {
-    if (registryChanged) {
-      if (registry.exists && registry.raw !== null) await writeAtomic(paths.registryPath, registry.raw, registryMode);
-      else await fs.unlink(paths.registryPath).catch(() => {});
-    }
-    if (settingsChanged) await restoreSettings(paths.settingsPath, settings.raw, settings.mode).catch(() => {});
-    await rollbackLinks(createdLinks);
-    if (profileCreated) await removeCreatedPath(paths.profileHome).catch(() => {});
-    throw cause;
+    return rollbackAdd(prepared, mutation, cause);
   }
 }
 
 async function addCommand(options) {
-  const prepared = await prepareAdd(options);
-  await confirmStopped(prepared);
+  const intent = await prepareAdd(options);
+  await confirmStopped(intent);
+  const prepared = await finalizeAdd(intent);
   await mutateAdd(prepared);
   printCreated({
     providerTitle: providerTitle(prepared.provider),
@@ -386,20 +673,6 @@ async function loadProfile(providerValue, nameValue) {
   return profile;
 }
 
-async function runProvider(binary, argumentsToPass, environment) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(binary, argumentsToPass, { env: environment, stdio: "inherit" });
-    child.once("error", (cause) => {
-      if (cause?.code === "ENOENT") {
-        reject(error(`The '${binary}' command was not found.`, `Install ${binary} and ensure it is on PATH.`));
-      } else {
-        reject(error(`Could not start '${binary}'.`, "Check its permissions and retry."));
-      }
-    });
-    child.once("close", (code, signal) => resolve(signal ? 1 : code ?? 1));
-  });
-}
-
 async function authCommand(options) {
   const profile = await loadProfile(options.provider, options.name);
   if (!(await pathExistsAsDirectory(profile.profileHome))) {
@@ -407,7 +680,7 @@ async function authCommand(options) {
   }
   return runProvider(
     providerBinary(profile.provider),
-    ["auth", "login"],
+    providerAuthArguments(profile.provider),
     makeEnvironment(profile.provider, profile.profileHome),
   );
 }

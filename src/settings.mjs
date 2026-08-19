@@ -1,14 +1,63 @@
 import fs from "node:fs/promises";
 
-import { backupFile, existingMode, readJsonFile, writeAtomic } from "./atomic.mjs";
+import {
+  backupFile,
+  existingMode,
+  readCurrentFile,
+  readJsonFile,
+  writeAtomicIfUnchanged,
+} from "./atomic.mjs";
 import { error } from "./errors.mjs";
 import { providerDriver } from "./names.mjs";
 
 function objectValue(value, label) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    ![Object.prototype, null].includes(Object.getPrototypeOf(value))
+  ) {
     throw error(`T3 settings field '${label}' must be an object.`, "Fix settings.json and retry.");
   }
   return value;
+}
+
+const OPEN_SLUG = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
+const ENVIRONMENT_NAME = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+function invalidEnvelope(label, detail) {
+  throw error(`T3 ${label} is invalid${detail ? `: ${detail}` : "."}`, "Fix settings.json and retry.");
+}
+
+function validateSlug(value, label, maxLength) {
+  if (typeof value !== "string" || value.length < 1 || value.length > maxLength || !OPEN_SLUG.test(value)) {
+    invalidEnvelope(label, `use 1-${maxLength} letters, digits, '_' or '-' with a leading letter`);
+  }
+}
+
+function validateEnvironment(instance, instanceId) {
+  if (instance.environment === undefined) return;
+  if (!Array.isArray(instance.environment)) invalidEnvelope(`provider instance '${instanceId}' environment`);
+  for (const [index, entry] of instance.environment.entries()) {
+    objectValue(entry, `providerInstances.${instanceId}.environment.${index}`);
+    const prefix = `provider instance '${instanceId}' environment entry ${index}`;
+    if (
+      typeof entry.name !== "string" ||
+      entry.name.length < 1 ||
+      entry.name.length > 128 ||
+      !ENVIRONMENT_NAME.test(entry.name)
+    ) {
+      invalidEnvelope(`${prefix} name`, "use 1-128 letters, digits, or '_' with a non-digit first character");
+    }
+    if (entry.value !== undefined && typeof entry.value !== "string") {
+      invalidEnvelope(`${prefix} value`, "it must be a string");
+    }
+    for (const field of ["sensitive", "valueRedacted"]) {
+      if (entry[field] !== undefined && typeof entry[field] !== "boolean") {
+        invalidEnvelope(`${prefix} ${field}`, "it must be a boolean");
+      }
+    }
+  }
 }
 
 function validateSettingsDocument(value) {
@@ -17,19 +66,21 @@ function validateSettingsDocument(value) {
   if (value.providers !== undefined) objectValue(value.providers, "providers");
   if (value.providerInstances) {
     for (const [instanceId, instance] of Object.entries(value.providerInstances)) {
+      validateSlug(instanceId, `provider instance ID '${instanceId}'`, 64);
       objectValue(instance, `providerInstances.${instanceId}`);
-      if (instance.driver !== undefined && typeof instance.driver !== "string") {
-        throw error(
-          `T3 provider instance '${instanceId}' has an invalid driver.`,
-          "Fix settings.json and retry.",
-        );
+      validateSlug(instance.driver, `provider instance '${instanceId}' driver`, 64);
+      for (const field of ["displayName", "accentColor"]) {
+        if (
+          instance[field] !== undefined &&
+          (typeof instance[field] !== "string" || instance[field].trim().length === 0)
+        ) {
+          invalidEnvelope(`provider instance '${instanceId}' ${field}`, "it must be a nonempty string");
+        }
       }
-      if (instance.environment !== undefined && !Array.isArray(instance.environment)) {
-        throw error(
-          `T3 provider instance '${instanceId}' has an invalid environment.`,
-          "Fix settings.json and retry.",
-        );
+      if (instance.enabled !== undefined && typeof instance.enabled !== "boolean") {
+        invalidEnvelope(`provider instance '${instanceId}' enabled`, "it must be a boolean");
       }
+      validateEnvironment(instance, instanceId);
     }
   }
   return value;
@@ -122,35 +173,23 @@ export function buildNextSettings({ document, provider, sourceHome, profileHome,
   return next;
 }
 
-export async function backupAndWriteSettings({ settingsPath, backupsPath, raw, next }) {
-  const backup = await backupFile(settingsPath, backupsPath);
-  const mode = await existingMode(settingsPath, 0o600);
-  await writeAtomic(settingsPath, `${JSON.stringify(next, null, 2)}\n`, mode);
-  return backup;
-}
-
-export async function restoreSettings(settingsPath, raw, mode) {
-  await writeAtomic(settingsPath, raw, mode);
-}
-
-export async function verifySettings(settingsPath, expectedInstanceId, expectedInstance, expectedPrimary) {
-  const result = await readSettingsDocument(settingsPath);
-  const actual = result.value.providerInstances?.[expectedInstanceId];
-  if (JSON.stringify(actual) !== JSON.stringify(expectedInstance)) {
+export async function backupAndWriteSettings({ settingsPath, backupsPath, expectedRaw, raw, next }) {
+  const expected = expectedRaw ?? raw;
+  const current = await readCurrentFile(settingsPath, "T3 settings");
+  if (!current.exists || current.raw !== expected) {
     throw error(
-      `T3 settings verification failed for '${expectedInstanceId}'.`,
-      "Restore the backup and retry.",
+      `T3 settings '${settingsPath}' changed while waiting to be updated.`,
+      "Rerun the operation to review the new state.",
     );
   }
-  for (const value of expectedPrimary) {
-    if (value.expected === undefined) continue;
-    const current = primaryHomeValues(result.value, value.provider).find((entry) => entry.label === value.label)?.value;
-    if (current !== value.expected) {
-      throw error(
-        `T3 primary home verification failed for ${value.provider}.`,
-        "Restore the backup and retry.",
-      );
-    }
+  const backup = await backupFile(settingsPath, backupsPath, current.raw);
+  const mode = await existingMode(settingsPath, 0o600);
+  const writtenRaw = `${JSON.stringify(next, null, 2)}\n`;
+  try {
+    await writeAtomicIfUnchanged(settingsPath, expected, writtenRaw, mode, "T3 settings");
+  } catch (cause) {
+    cause.backupPath = backup;
+    throw cause;
   }
-  return result;
+  return { backupPath: backup, writtenRaw };
 }
