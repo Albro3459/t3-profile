@@ -77,6 +77,7 @@ import {
   printSyncSummary,
 } from "./output.mjs";
 import { collectUsage, displayTimezone } from "./usage.mjs";
+import { TESTED_PLATFORM, TESTED_PROVIDER_VERSIONS } from "./support.mjs";
 
 function requirePositional(command, values, expected) {
   if (values.length !== expected) {
@@ -1216,8 +1217,8 @@ function diagnostic(results, level, label, message) {
 }
 
 async function diagnosePlatform(results) {
-  if (process.platform !== "darwin" || process.arch !== "arm64") {
-    diagnostic(results, "warn", "platform", `${process.platform} ${process.arch} is untested; only macOS 26.5 on ARM is tested.`);
+  if (process.platform !== TESTED_PLATFORM.os || process.arch !== TESTED_PLATFORM.arch) {
+    diagnostic(results, "warn", "platform", `${process.platform} ${process.arch} is untested; only ${TESTED_PLATFORM.label} is tested.`);
     return;
   }
   const version = await inspectCommand("sw_vers", ["-productVersion"]);
@@ -1232,9 +1233,9 @@ async function diagnosePlatform(results) {
   const productVersion = version.found && version.code === 0 ? version.stdout.trim() : "unknown macOS version";
   diagnostic(
     results,
-    productVersion === "26.5" ? "pass" : "warn",
+    productVersion === TESTED_PLATFORM.version ? "pass" : "warn",
     "platform",
-    productVersion === "26.5" ? "macOS 26.5 on ARM is tested." : `${productVersion} on ARM is untested; macOS 26.5 is tested.`,
+    productVersion === TESTED_PLATFORM.version ? `${TESTED_PLATFORM.label} is tested.` : `${productVersion} on ARM is untested; ${TESTED_PLATFORM.label} is tested.`,
   );
 }
 
@@ -1255,12 +1256,12 @@ async function diagnoseProvider(results, profile) {
   }
   if (!version.timedOut) {
     const versionText = `${version.stdout}\n${version.stderr}`.match(/\d+\.\d+\.\d+/)?.[0] ?? "unknown";
-    if (profile.provider === "claude" && versionText === "2.1.235") {
-      diagnostic(results, "pass", `${label} version`, "Claude Code 2.1.235 is tested.");
-    } else if (profile.provider === "claude") {
-      diagnostic(results, "warn", `${label} version`, `Claude Code ${versionText} is untested; 2.1.235 is tested.`);
+    const testedVersion = TESTED_PROVIDER_VERSIONS[profile.provider];
+    const providerLabel = profile.provider === "claude" ? "Claude Code" : "Codex";
+    if (versionText === testedVersion) {
+      diagnostic(results, "pass", `${label} version`, `${providerLabel} ${testedVersion} is tested.`);
     } else {
-      diagnostic(results, "warn", `${label} version`, `Codex ${versionText} is untested.`);
+      diagnostic(results, "warn", `${label} version`, `${providerLabel} ${versionText} is untested; ${testedVersion} is tested.`);
     }
   }
   const auth = await inspectCommand(

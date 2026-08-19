@@ -114,5 +114,8 @@ t3-profile doctor codex work
 shows five-hour and weekly usage. Codex shows weekly usage. A failed usage check
 appears as `unavailable` without hiding the profile.
 
+See the [tested support matrix](docs/support.md) for verified versions and
+platforms.
+
 For command details, sharing behavior, storage paths, and removal behavior, see
 [the reference guide](docs/reference.md).

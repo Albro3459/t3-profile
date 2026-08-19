@@ -143,6 +143,8 @@ errors appear as `unavailable` for the affected profile.
 Claude usage comes from Anthropic's OAuth usage endpoint. See
 [Claude usage response schema](claude-usage-schema.md) for the supported fields.
 
+See the [tested support matrix](support.md) for verified versions and platforms.
+
 ## Sync
 
 `sync` compares every registered profile with T3's provider instances. It adds
