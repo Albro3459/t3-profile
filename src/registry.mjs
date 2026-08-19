@@ -98,3 +98,7 @@ export function findProfile(profiles, provider, name) {
 export function findByInstanceId(profiles, instanceId) {
   return profiles.find((profile) => profile.instanceId === instanceId);
 }
+
+export function withoutProfile(profiles, provider, name) {
+  return profiles.filter((profile) => profile.provider !== provider || profile.name !== name);
+}

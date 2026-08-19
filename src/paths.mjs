@@ -26,6 +26,97 @@ export async function lstatOrNull(value) {
   }
 }
 
+export function isRedirectedStats(stats) {
+  return Boolean(
+    stats?.isSymbolicLink?.() ||
+    stats?.isJunction?.() ||
+    stats?.isReparsePoint?.(),
+  );
+}
+
+export function filesystemIdentity(stats) {
+  if (!stats) return null;
+  return { dev: stats.dev, ino: stats.ino };
+}
+
+export function sameFilesystemIdentity(left, right) {
+  if (left === null || right === null) return left === right;
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+async function requireManagedChainDirectory(value, label) {
+  const stats = await lstatOrNull(value);
+  if (!stats || isRedirectedStats(stats) || !stats.isDirectory()) {
+    throw error(
+      `Managed ${label} '${value}' is not a regular directory.`,
+      "Move it aside or choose a different T3_PROFILE_HOME.",
+    );
+  }
+  let canonical;
+  try {
+    canonical = await fs.realpath(value);
+  } catch {
+    throw error(`Cannot resolve managed ${label.toLowerCase()} '${value}'.`, "Check its permissions.");
+  }
+  return { stats, canonical };
+}
+
+export async function validateManagedProfileChain({ managedRoot, provider, name, requireHome = false }) {
+  const root = await requireManagedChainDirectory(managedRoot, "root");
+  const profilesPath = path.join(managedRoot, "profiles");
+  const providerPath = path.join(profilesPath, provider);
+  const profiles = await requireManagedChainDirectory(profilesPath, "profiles directory");
+  const providerParent = await requireManagedChainDirectory(providerPath, "provider directory");
+  if (!isPathWithin(root.canonical, profiles.canonical) ||
+      !isPathWithin(root.canonical, providerParent.canonical) ||
+      !isSamePath(path.dirname(profiles.canonical), root.canonical) ||
+      !isSamePath(path.dirname(providerParent.canonical), profiles.canonical)) {
+    throw error(
+      `Managed profile parent for '${provider} ${name}' resolves outside the managed root.`,
+      "Move it aside or choose a different T3_PROFILE_HOME.",
+    );
+  }
+
+  const profileHome = path.join(providerPath, name);
+  const homeStats = await lstatOrNull(profileHome);
+  if (homeStats && (isRedirectedStats(homeStats) || !homeStats.isDirectory())) {
+    throw error(
+      `Profile home '${profileHome}' is not a regular directory.`,
+      "Move it aside and retry.",
+    );
+  }
+  if (!homeStats) {
+    if (requireHome) {
+      throw error(`Profile home '${profileHome}' does not exist.`, "Run doctor and repair or remove the profile.");
+    }
+    return {
+      managedRoot: root,
+      profiles,
+      providerParent,
+      profileHome: { path: profileHome, stats: null, canonical: null },
+    };
+  }
+  let canonicalHome;
+  try {
+    canonicalHome = await fs.realpath(profileHome);
+  } catch {
+    throw error(`Cannot resolve profile home '${profileHome}'.`, "Check its permissions.");
+  }
+  if (!isPathWithin(root.canonical, canonicalHome) ||
+      !isSamePath(path.dirname(canonicalHome), providerParent.canonical)) {
+    throw error(
+      `Profile home '${profileHome}' resolves outside the managed root.`,
+      "Move it aside and retry.",
+    );
+  }
+  return {
+    managedRoot: root,
+    profiles,
+    providerParent,
+    profileHome: { path: profileHome, stats: homeStats, canonical: canonicalHome },
+  };
+}
+
 export async function requireDirectory(value, label) {
   const absolute = absolutePath(value);
   let stats;
