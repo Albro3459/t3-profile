@@ -13,7 +13,10 @@ const AUTH_OVERRIDE_VARIABLES = {
 
 export function makeEnvironment(provider, profileHome, baseEnvironment = process.env) {
   const environment = { ...baseEnvironment };
-  for (const variable of AUTH_OVERRIDE_VARIABLES[provider]) delete environment[variable];
+  const scrubbed = new Set(AUTH_OVERRIDE_VARIABLES[provider]);
+  for (const variable of Object.keys(environment)) {
+    if (scrubbed.has(variable) || scrubbed.has(variable.toUpperCase())) delete environment[variable];
+  }
   if (provider === "claude") {
     environment.CLAUDE_CONFIG_DIR = profileHome;
     environment.CLAUDE_SECURESTORAGE_CONFIG_DIR = profileHome;

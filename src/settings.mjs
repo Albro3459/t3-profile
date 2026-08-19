@@ -36,7 +36,7 @@ function validateSettingsDocument(value) {
 }
 
 export async function readSettingsDocument(settingsPath) {
-  const stats = await fs.stat(settingsPath).catch((cause) => {
+  const stats = await fs.lstat(settingsPath).catch((cause) => {
     if (cause?.code === "ENOENT") {
       throw error(
         `T3 settings '${settingsPath}' does not exist.`,
@@ -45,7 +45,12 @@ export async function readSettingsDocument(settingsPath) {
     }
     throw error(`Cannot inspect T3 settings '${settingsPath}'.`, "Check its permissions.");
   });
-  if (!stats.isFile()) throw error(`T3 settings '${settingsPath}' is not a regular file.`, "Fix the T3 installation.");
+  if (stats.isSymbolicLink() || !stats.isFile()) {
+    throw error(
+      `T3 settings '${settingsPath}' is not a regular file.`,
+      "Restore a regular settings.json file before retrying.",
+    );
+  }
   const document = await readJsonFile(settingsPath, "T3 settings");
   validateSettingsDocument(document.value);
   return { raw: document.raw, value: document.value, mode: stats.mode & 0o777 };

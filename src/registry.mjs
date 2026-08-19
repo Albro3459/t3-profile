@@ -62,14 +62,17 @@ function decodeProfile(value, index) {
 }
 
 export async function readRegistry(registryPath) {
-  let exists = true;
-  try {
-    await fs.access(registryPath);
-  } catch (cause) {
-    if (cause?.code === "ENOENT") exists = false;
-    else throw error(`Cannot inspect registry '${registryPath}'.`, "Check its permissions.");
+  const stats = await fs.lstat(registryPath).catch((cause) => {
+    if (cause?.code === "ENOENT" || cause?.code === "ENOTDIR") return null;
+    throw error(`Cannot inspect registry '${registryPath}'.`, "Check its permissions.");
+  });
+  if (!stats) return { profiles: [], exists: false, raw: null };
+  if (stats.isSymbolicLink() || !stats.isFile()) {
+    throw error(
+      `Profile registry '${registryPath}' is not a regular file.`,
+      "Move it aside or restore a regular profiles.json file.",
+    );
   }
-  if (!exists) return { profiles: [], exists: false, raw: null };
   const { raw, value } = await readJsonFile(registryPath, "profile registry");
   if (!value || typeof value !== "object" || Array.isArray(value) || !Array.isArray(value.profiles)) {
     throw error(`The profile registry '${registryPath}' has an invalid shape.`, "Fix profiles.json and retry.");

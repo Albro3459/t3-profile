@@ -69,14 +69,45 @@ export async function requireFile(value, label) {
 export async function resolveManagedRoot() {
   const configured = process.env.T3_PROFILE_HOME?.trim();
   const candidate = absolutePath(configured || path.join(os.homedir(), ".t3-profile"));
-  const existing = await lstatOrNull(candidate);
-  if (existing && !existing.isDirectory()) {
-    throw error(
-      `Managed root '${candidate}' is not a directory.`,
-      "Move it aside or set T3_PROFILE_HOME to a directory.",
-    );
+  const existing = await fs.stat(candidate).catch((cause) => {
+    if (cause?.code === "ENOENT" || cause?.code === "ENOTDIR") return null;
+    throw error(`Cannot inspect managed root '${candidate}'.`, "Check its permissions.");
+  });
+  if (existing) {
+    if (!existing.isDirectory()) {
+      throw error(
+        `Managed root '${candidate}' is not a directory.`,
+        "Move it aside or set T3_PROFILE_HOME to a directory.",
+      );
+    }
+    return fs.realpath(candidate);
   }
-  return existing ? fs.realpath(candidate) : candidate;
+  return canonicalizeMissingPath(candidate);
+}
+
+async function canonicalizeMissingPath(value) {
+  let current = path.resolve(value);
+  const suffix = [];
+  while (true) {
+    const stats = await fs.stat(current).catch((cause) => {
+      if (cause?.code === "ENOENT" || cause?.code === "ENOTDIR") return null;
+      throw error(`Cannot inspect managed root parent '${current}'.`, "Check its permissions.");
+    });
+    if (stats) {
+      if (!stats.isDirectory()) {
+        throw error(
+          `Managed root parent '${current}' is not a directory.`,
+          "Choose a different T3_PROFILE_HOME.",
+        );
+      }
+      const realParent = await fs.realpath(current);
+      return path.join(realParent, ...suffix);
+    }
+    const parent = path.dirname(current);
+    suffix.unshift(path.basename(current));
+    if (parent === current) return path.resolve(value);
+    current = parent;
+  }
 }
 
 export function t3HomePath() {

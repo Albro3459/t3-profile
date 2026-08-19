@@ -10,6 +10,25 @@ async function temporaryPath(target) {
   return path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${suffix}.tmp`);
 }
 
+async function replaceTarget(temporary, target) {
+  try {
+    await fs.rename(temporary, target);
+    return;
+  } catch (cause) {
+    if (process.platform !== "win32" || !["EEXIST", "EPERM"].includes(cause?.code)) throw cause;
+  }
+
+  const displaced = await temporaryPath(target);
+  await fs.rename(target, displaced);
+  try {
+    await fs.rename(temporary, target);
+  } catch (cause) {
+    await fs.rename(displaced, target).catch(() => {});
+    throw cause;
+  }
+  await fs.unlink(displaced).catch(() => {});
+}
+
 export async function writeAtomic(target, data, mode) {
   await fs.mkdir(path.dirname(target), { recursive: true });
   const temporary = await temporaryPath(target);
@@ -20,7 +39,7 @@ export async function writeAtomic(target, data, mode) {
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await fs.rename(temporary, target);
+    await replaceTarget(temporary, target);
   } catch (cause) {
     if (handle) await handle.close().catch(() => {});
     await fs.rm(temporary, { force: true }).catch(() => {});
@@ -33,6 +52,13 @@ export async function writeJsonAtomic(target, value, mode) {
 }
 
 export async function backupFile(source, backupsDirectory) {
+  const existingDirectory = await lstatOrNull(backupsDirectory);
+  if (existingDirectory && (existingDirectory.isSymbolicLink() || !existingDirectory.isDirectory())) {
+    throw error(
+      `Backup directory '${backupsDirectory}' is not a managed directory.`,
+      "Move it aside or choose a different T3_PROFILE_HOME.",
+    );
+  }
   await fs.mkdir(backupsDirectory, { recursive: true, mode: 0o700 });
   const raw = await fs.readFile(source);
   const backup = path.join(

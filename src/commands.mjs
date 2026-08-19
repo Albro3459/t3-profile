@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { existingMode, removeCreatedPath, writeJsonAtomic } from "./atomic.mjs";
+import { existingMode, removeCreatedPath, writeAtomic, writeJsonAtomic } from "./atomic.mjs";
 import { CancelledError, error } from "./errors.mjs";
 import { createLinks, inspectClaudeResources, preflightLinks, rollbackLinks } from "./links.mjs";
 import {
@@ -14,7 +14,6 @@ import {
   validateProvider,
 } from "./names.mjs";
 import {
-  absolutePath,
   displayPath,
   isSamePath,
   lstatOrNull,
@@ -136,6 +135,30 @@ async function prompt(question, defaultValue = false) {
   }
 }
 
+function sharingQuestion({ provider, sourceHome, resources }) {
+  const title = providerTitle(provider);
+  if (provider === "claude") {
+    const lines = [
+      `Share the standard ${title} configuration from ${displayPath(sourceHome)}?`,
+      "",
+      ...resources.available.map((resource) => `  ${resource.name}`),
+      ...resources.skipped.map((resource) => `  ${resource} (missing, skipped)`),
+      "",
+      "Share these resources? [Y/n] ",
+    ];
+    return lines.join("\n");
+  }
+  return [
+    `Share the standard ${title} home from ${displayPath(sourceHome)}?`,
+    "",
+    "  configuration, AGENTS.md, skills, plugins, sessions, and runtime state",
+    "  auth.json and models_cache.json remain private",
+    "  log, memories, and tmp remain shadow-local",
+    "",
+    "Share these resources? [Y/n] ",
+  ].join("\n");
+}
+
 function settingsPrimarySummary(document, provider) {
   return primaryHomeValues(document, provider).map((entry) => ({ ...entry, provider }));
 }
@@ -165,6 +188,18 @@ async function prepareAdd(options) {
       "Set T3_PROFILE_HOME to a directory outside the primary provider home.",
     );
   }
+  for (const parent of [
+    path.join(managedRoot, "profiles"),
+    path.join(managedRoot, "profiles", provider),
+  ]) {
+    const parentStats = await lstatOrNull(parent);
+    if (parentStats && (parentStats.isSymbolicLink() || !parentStats.isDirectory())) {
+      throw error(
+        `Managed profile parent '${parent}' is not a regular directory.`,
+        "Move it aside or choose a different T3_PROFILE_HOME.",
+      );
+    }
+  }
   if (pathsOverlap(paths.profileHome, paths.settingsPath) || pathsOverlap(paths.profileHome, paths.registryPath)) {
     throw error(
       "The managed profile path overlaps a control file.",
@@ -187,10 +222,7 @@ async function prepareAdd(options) {
     resources = await inspectClaudeResources(sourceHome, paths.profileHome);
   }
   if (!options.yes && !options.isolated) {
-    const share = await prompt(
-      `Share the standard ${providerTitle(provider)} configuration from ${displayPath(sourceHome)}? [Y/n] `,
-      true,
-    );
+    const share = await prompt(sharingQuestion({ provider, sourceHome, resources }), true);
     sharing = share ? "standard" : "isolated";
     if (sharing === "isolated") resources = { available: [], skipped: [] };
     if (sharing === "standard" && provider === "claude" && resources.available.length === 0 && resources.skipped.length === 0) {
@@ -319,7 +351,7 @@ async function mutateAdd(prepared) {
     return registryEntry;
   } catch (cause) {
     if (registryChanged) {
-      if (registry.exists && registry.raw !== null) await writeAtomicFallback(paths.registryPath, registry.raw, registryMode);
+      if (registry.exists && registry.raw !== null) await writeAtomic(paths.registryPath, registry.raw, registryMode);
       else await fs.unlink(paths.registryPath).catch(() => {});
     }
     if (settingsChanged) await restoreSettings(paths.settingsPath, settings.raw, settings.mode).catch(() => {});
@@ -327,11 +359,6 @@ async function mutateAdd(prepared) {
     if (profileCreated) await removeCreatedPath(paths.profileHome).catch(() => {});
     throw cause;
   }
-}
-
-async function writeAtomicFallback(filePath, raw, mode) {
-  const { writeAtomic } = await import("./atomic.mjs");
-  await writeAtomic(filePath, raw, mode);
 }
 
 async function addCommand(options) {
