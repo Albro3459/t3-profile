@@ -220,8 +220,12 @@ function renderUsage(usage, timezone = "UTC") {
       lines.push(`${label} unavailable`);
       continue;
     }
+    if (typeof window.percent !== "number" || !Number.isFinite(window.percent) || window.percent < 0 || window.percent > 100) {
+      lines.push(`${label} unavailable`);
+      continue;
+    }
     const reset = formatResetTime(window.resetsAt, timezone);
-    lines.push(reset === null ? `${label} unavailable` : `${label} ${window.percent}% · resets ${reset}`);
+    lines.push(reset === null ? `${label} unavailable` : `${label} ${Math.round(window.percent)}% · resets ${reset}`);
   }
   return lines.length > 0 ? lines : ["unavailable"];
 }

@@ -20,6 +20,12 @@ function requestKey(id) {
   return `${typeof id}:${String(id)}`;
 }
 
+function isValidRequestId(id) {
+  return id === null ||
+    typeof id === "string" ||
+    (typeof id === "number" && Number.isFinite(id));
+}
+
 function jsonRpcError(message) {
   return new Error(`JSON-RPC inspection failed: ${message}`);
 }
@@ -38,6 +44,12 @@ export async function runBidirectionalJsonRpc({
 }) {
   if (!Array.isArray(steps) || steps.length === 0) {
     throw new TypeError("JSON-RPC inspection requires at least one step.");
+  }
+  if (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes <= 0) {
+    throw new TypeError("JSON-RPC output bound must be a positive integer.");
+  }
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+    throw new TypeError("JSON-RPC timeout must be a non-negative number.");
   }
 
   let child;
@@ -62,10 +74,12 @@ export async function runBidirectionalJsonRpc({
   let stdoutBytes = 0;
   let stderrBytes = 0;
   let stdoutRemainder = "";
+  let stdoutRemainderBytes = 0;
   const stdoutDecoder = new StringDecoder("utf8");
   const responses = new Map();
   const waiters = new Map();
   const seenResponseIds = new Set();
+  const requestedIds = new Set();
 
   const fail = (cause) => {
     if (!failure) failInspection(cause);
@@ -76,14 +90,21 @@ export async function runBidirectionalJsonRpc({
       fail(jsonRpcError("received a non-object JSONL message"));
       return;
     }
+    if (Object.hasOwn(message, "jsonrpc") && message.jsonrpc !== "2.0") {
+      fail(jsonRpcError("received a non-JSON-RPC 2.0 message"));
+      return;
+    }
     if (!Object.hasOwn(message, "id")) return;
+    if (!isValidRequestId(message.id)) {
+      fail(jsonRpcError("received a response with an invalid ID"));
+      return;
+    }
     const key = requestKey(message.id);
-    if (!waiters.has(key) && !seenResponseIds.has(key)) return;
+    if (!waiters.has(key) && !requestedIds.has(key) && !seenResponseIds.has(key)) return;
     if (seenResponseIds.has(key)) {
       fail(jsonRpcError(`received duplicate response for request ${String(message.id)}`));
       return;
     }
-    if (!waiters.has(key)) return;
     if (Object.hasOwn(message, "error")) {
       fail(jsonRpcError(`request ${String(message.id)} returned an error`));
       return;
@@ -95,8 +116,10 @@ export async function runBidirectionalJsonRpc({
     seenResponseIds.add(key);
     responses.set(key, message.result);
     const resolve = waiters.get(key);
-    waiters.delete(key);
-    resolve(message.result);
+    if (resolve) {
+      waiters.delete(key);
+      resolve(message.result);
+    }
   };
 
   const parseStdout = (chunk) => {
@@ -107,10 +130,16 @@ export async function runBidirectionalJsonRpc({
       return;
     }
     stdoutRemainder += stdoutDecoder.write(value);
+    stdoutRemainderBytes += value.byteLength;
     let newline;
     while ((newline = stdoutRemainder.indexOf("\n")) !== -1) {
       const line = stdoutRemainder.slice(0, newline);
+      stdoutRemainderBytes -= Buffer.byteLength(line) + 1;
       stdoutRemainder = stdoutRemainder.slice(newline + 1);
+      if (Buffer.byteLength(line) > maxOutputBytes) {
+        fail(jsonRpcError("JSONL line exceeded its bound"));
+        return;
+      }
       let message;
       try {
         message = JSON.parse(line);
@@ -124,16 +153,9 @@ export async function runBidirectionalJsonRpc({
 
   const parseRemainder = () => {
     stdoutRemainder += stdoutDecoder.end();
-    if (stdoutRemainder.length === 0) return;
-    let message;
-    try {
-      message = JSON.parse(stdoutRemainder);
-    } catch {
+    if (!cleanupStarted && (stdoutRemainder.length !== 0 || stdoutRemainderBytes !== 0)) {
       fail(jsonRpcError("received an incomplete JSONL message"));
-      return;
     }
-    stdoutRemainder = "";
-    settleResponse(message);
   };
 
   const writeMessage = (message) => new Promise((resolve, reject) => {
@@ -212,9 +234,15 @@ export async function runBidirectionalJsonRpc({
       stderrBytes += (Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))).byteLength;
       if (stderrBytes > maxOutputBytes) fail(jsonRpcError("stderr exceeded its bound"));
     });
-    child.stdout.on("error", (cause) => fail(cause));
-    child.stderr.on("error", (cause) => fail(cause));
-    child.stdin.on("error", (cause) => fail(cause));
+    child.stdout.on("error", (cause) => {
+      if (!cleanupStarted) fail(cause);
+    });
+    child.stderr.on("error", (cause) => {
+      if (!cleanupStarted) fail(cause);
+    });
+    child.stdin.on("error", (cause) => {
+      if (!cleanupStarted) fail(cause);
+    });
     child.once("error", (cause) => fail(cause));
     child.once("close", (code, signal) => {
       closed = true;
@@ -225,6 +253,7 @@ export async function runBidirectionalJsonRpc({
       }
     });
     timeout = setTimeout(() => fail(jsonRpcError("inspection timed out")), timeoutMs);
+    if (closed) clearTimeout(timeout);
 
     const results = new Map();
     for (const step of steps) {
@@ -232,10 +261,16 @@ export async function runBidirectionalJsonRpc({
         throw new TypeError("JSON-RPC steps must be requests or notifications.");
       }
       if (step.type === "notification") {
+        if (typeof step.method !== "string") throw new TypeError("JSON-RPC notifications require a method.");
         await Promise.race([writeMessage({ jsonrpc: "2.0", method: step.method, params: step.params }), failurePromise]);
         continue;
       }
       if (!Object.hasOwn(step, "id")) throw new TypeError("JSON-RPC requests require an ID.");
+      if (typeof step.method !== "string") throw new TypeError("JSON-RPC requests require a method.");
+      if (!isValidRequestId(step.id)) throw new TypeError("JSON-RPC request IDs must be strings, numbers, or null.");
+      const key = requestKey(step.id);
+      if (requestedIds.has(key)) throw jsonRpcError(`duplicate request ID ${String(step.id)}`);
+      requestedIds.add(key);
       await Promise.race([
         writeMessage({ jsonrpc: "2.0", id: step.id, method: step.method, params: step.params }),
         failurePromise,
@@ -250,5 +285,6 @@ export async function runBidirectionalJsonRpc({
     throw failure ?? cause;
   } finally {
     await cleanup();
+    if (failure) throw failure;
   }
 }

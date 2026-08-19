@@ -28,9 +28,9 @@ export async function claudeUsageAdapter({ profileHome, environment, inspect = i
       environment,
       INSPECT_COMMAND_TIMEOUT_MS,
     );
-    if (!result?.found || result.code !== 0 || result.timedOut) return unavailable();
+    if (!result?.found || result.code !== 0 || result.timedOut || result.outputExceeded) return unavailable();
     if (typeof result.stdout !== "string" || typeof result.stderr !== "string") return unavailable();
-    if (Buffer.byteLength(result.stdout) >= CLAUDE_USAGE_OUTPUT_LIMIT_BYTES || Buffer.byteLength(result.stderr) >= CLAUDE_USAGE_OUTPUT_LIMIT_BYTES) {
+    if (Buffer.byteLength(result.stdout) > CLAUDE_USAGE_OUTPUT_LIMIT_BYTES || Buffer.byteLength(result.stderr) > CLAUDE_USAGE_OUTPUT_LIMIT_BYTES) {
       return unavailable();
     }
     return parseClaudeUsageEnvelope(JSON.parse(result.stdout));

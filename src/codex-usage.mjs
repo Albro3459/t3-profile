@@ -63,12 +63,16 @@ export function parseCodexUsageResult(result) {
   return { windows: [normalized] };
 }
 
-export async function inspectCodexUsage({ profileHome, timeoutMs = 5_000 }) {
+export async function inspectCodexUsage({
+  profileHome,
+  environment = makeEnvironment("codex", profileHome),
+  timeoutMs = 5_000,
+}) {
   try {
     const responses = await runBidirectionalJsonRpc({
       binary: "codex",
       argumentsToPass: ["app-server"],
-      environment: makeEnvironment("codex", profileHome),
+      environment,
       timeoutMs,
       steps: [
         {

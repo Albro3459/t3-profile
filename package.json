@@ -16,7 +16,7 @@
   },
   "scripts": {
     "start": "node ./bin/t3-profile.mjs",
-    "build": "node --check bin/t3-profile.mjs && node --check src/cli.mjs && node --check src/commands.mjs && node --check src/atomic.mjs && node --check src/errors.mjs && node --check src/links.mjs && node --check src/names.mjs && node --check src/paths.mjs && node --check src/providers.mjs && node --check src/process.mjs && node --check src/registry.mjs && node --check src/settings.mjs && node --check src/output.mjs && node --check src/version.mjs",
+    "build": "node --check bin/t3-profile.mjs && node --check src/cli.mjs && node --check src/commands.mjs && node --check src/atomic.mjs && node --check src/errors.mjs && node --check src/links.mjs && node --check src/names.mjs && node --check src/paths.mjs && node --check src/providers.mjs && node --check src/process.mjs && node --check src/registry.mjs && node --check src/settings.mjs && node --check src/output.mjs && node --check src/version.mjs && node --check src/codex-usage.mjs && node --check src/jsonrpc.mjs && node --check src/usage-claude.mjs && node --check src/usage.mjs",
     "lint": "npm run build",
     "version:update": "npm version patch --no-git-tag-version",
     "deploy": "npm publish --access=public"

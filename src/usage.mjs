@@ -6,8 +6,11 @@ import { createClaudeUsageAdapter } from "./usage-claude.mjs";
 export const USAGE_WINDOW_IDS = Object.freeze(["five_hour", "week"]);
 export const usageAdapters = {
   claude: createClaudeUsageAdapter(),
-  codex: async ({ canonicalProfileHome }) => {
-    const result = await inspectCodexUsage({ profileHome: canonicalProfileHome });
+  codex: async ({ canonicalProfileHome, environment }) => {
+    const result = await inspectCodexUsage({
+      profileHome: canonicalProfileHome,
+      environment,
+    });
     const hasAvailableWindow = result?.windows?.some((window) => window?.status === "available");
     return hasAvailableWindow
       ? { status: "available", windows: result.windows }
@@ -39,13 +42,18 @@ function validPercentage(value) {
 }
 
 function validDate(value) {
-  const date = value instanceof Date ? value : new Date(value);
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value : null;
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  if (typeof value === "number" && !Number.isFinite(value)) return null;
+  if (typeof value === "string" && value.trim().length === 0) return null;
+  const date = new Date(value);
   return Number.isFinite(date.getTime()) ? date : null;
 }
 
 function normalizeWindow(window) {
   if (!window || typeof window !== "object" || !USAGE_WINDOW_IDS.includes(window.id)) return null;
   if (window.status === "unavailable") return { id: window.id, status: "unavailable" };
+  if (window.status !== "available") return { id: window.id, status: "unavailable" };
   const date = validDate(window.resetsAt);
   if (!validPercentage(window.percent) || !date) return { id: window.id, status: "unavailable" };
   return { id: window.id, status: "available", percent: Math.round(window.percent), resetsAt: date };
@@ -61,6 +69,11 @@ function normalizeResult(result) {
   const windows = Array.isArray(result.windows)
     ? result.windows.map(normalizeWindow).filter(Boolean)
     : [];
+  const ids = new Set();
+  for (const window of windows) {
+    if (ids.has(window.id)) return { status: "unavailable", windows: [] };
+    ids.add(window.id);
+  }
   if (result.status === "unavailable" && windows.length === 0) return { status: "unavailable", windows: [] };
   return { status: "available", windows };
 }

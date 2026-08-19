@@ -42,10 +42,11 @@ t3-profile remove claude personal
 ```
 
 `list` includes a supplementary `USAGE` column for every registered profile.
-Claude reports `5h` followed by `week`; Codex reports its weekly window. Reset
-times use the invocation's IANA timezone (or visibly labeled `UTC` when the
-local timezone cannot be resolved). Usage failures render as `unavailable` and
-do not hide the profile or change the command's normal successful exit.
+When a provider returns a supported usage response, Claude reports `5h`
+followed by `week`, and Codex reports its weekly window. Reset times use the
+invocation's IANA timezone (or visibly labeled `UTC` when the local timezone
+cannot be resolved). Usage failures render as `unavailable` and do not hide
+the profile or change the command's normal successful exit.
 
 ```text
 PROVIDER  NAME  SHARING   HOME                                      USAGE
@@ -53,6 +54,11 @@ claude    bets  standard  ~/.t3-profile/profiles/claude/bets        5h 100% · r
                                                                     week 45% · resets Aug 24, 2:59 PM America/Chicago
 codex     work  isolated  ~/.t3-profile/profiles/codex/work         week 65% · resets Aug 20, 8:59 AM America/Chicago
 ```
+
+The current supported Claude CLI envelope returns the `/usage` response as a
+human-formatted string rather than a machine-readable window object. The
+adapter deliberately rejects that unsupported shape, so Claude usage can show
+as `unavailable` until the CLI exposes typed percentage and reset fields.
 
 `--home` selects the existing primary provider home used as the sharing
 source. Defaults are `~/.claude` and `~/.codex`. The source is never moved.
