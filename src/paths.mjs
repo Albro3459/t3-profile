@@ -69,12 +69,12 @@ export async function requireFile(value, label) {
 export async function resolveManagedRoot() {
   const configured = process.env.T3_PROFILE_HOME?.trim();
   const candidate = absolutePath(configured || path.join(os.homedir(), ".t3-profile"));
-  const existing = await fs.stat(candidate).catch((cause) => {
+  const existing = await fs.lstat(candidate).catch((cause) => {
     if (cause?.code === "ENOENT" || cause?.code === "ENOTDIR") return null;
     throw error(`Cannot inspect managed root '${candidate}'.`, "Check its permissions.");
   });
   if (existing) {
-    if (!existing.isDirectory()) {
+    if (existing.isSymbolicLink() || !existing.isDirectory()) {
       throw error(
         `Managed root '${candidate}' is not a directory.`,
         "Move it aside or set T3_PROFILE_HOME to a directory.",

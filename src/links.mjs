@@ -277,7 +277,21 @@ export async function createLinks(resources) {
         continue;
       }
       await fs.symlink(resource.source, resource.destination, linkKind(resource.type));
-      created.push(resource.destination);
+      const ownership = {
+        destination: resource.destination,
+        realSource: resource.realSource,
+        identity: null,
+      };
+      created.push(ownership);
+      const createdStats = await fs.lstat(resource.destination, { bigint: true });
+      if (!createdStats.isSymbolicLink()) {
+        throw new Error("created destination is no longer a symbolic link");
+      }
+      ownership.identity = linkIdentity(createdStats);
+      const createdTarget = await existingLinkTarget(resource.destination);
+      if (!isSamePath(createdTarget, resource.realSource)) {
+        throw new Error("created link target changed before rollback ownership was recorded");
+      }
     }
     await verifyClaudeLinks(validatedResources);
     return created;
@@ -291,16 +305,50 @@ export async function createLinks(resources) {
 
 export async function rollbackLinks(created) {
   const failures = [];
-  for (const destination of [...created].reverse()) {
+  for (const entry of [...created].reverse()) {
+    const ownership = typeof entry === "string"
+      ? { destination: entry, realSource: undefined, identity: null }
+      : entry;
+    const destination = ownership.destination;
     try {
-      const stats = await fs.lstat(destination).catch((cause) => {
+      const stats = await fs.lstat(destination, { bigint: true }).catch((cause) => {
         if (cause?.code === "ENOENT" || cause?.code === "ENOTDIR") return null;
         throw cause;
       });
-      if (stats?.isSymbolicLink()) await fs.unlink(destination);
+      if (!stats) continue;
+      if (!stats.isSymbolicLink()) {
+        throw new Error("destination is no longer a symbolic link");
+      }
+      if (!ownership.identity || !sameLinkIdentity(stats, ownership.identity)) {
+        throw new Error("link ownership cannot be established; destination was replaced");
+      }
+      if (ownership.realSource !== undefined) {
+        const target = await existingLinkTarget(destination);
+        if (!isSamePath(target, ownership.realSource)) {
+          throw new Error("link target changed; destination ownership cannot be established");
+        }
+      }
+      await fs.unlink(destination);
     } catch (cause) {
       failures.push({ path: destination, cause });
     }
   }
   return failures;
+}
+
+function linkIdentity(stats) {
+  return {
+    dev: stats.dev.toString(),
+    ino: stats.ino.toString(),
+    ctimeNs: stats.ctimeNs.toString(),
+    birthtimeNs: stats.birthtimeNs.toString(),
+  };
+}
+
+function sameLinkIdentity(stats, expected) {
+  const actual = linkIdentity(stats);
+  return actual.dev === expected.dev
+    && actual.ino === expected.ino
+    && actual.ctimeNs === expected.ctimeNs
+    && actual.birthtimeNs === expected.birthtimeNs;
 }

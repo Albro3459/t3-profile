@@ -1,7 +1,7 @@
 import { error } from "./errors.mjs";
 
 export const PROVIDERS = ["claude", "codex"];
-const NAME_PATTERN = /^[a-z][a-z0-9_-]{0,47}$/;
+const NAME_PATTERN = /^[a-z][a-z0-9_-]{0,47}$(?![\s\S])/;
 const RESERVED_WINDOWS_NAMES = new Set([
   "con",
   "prn",
@@ -40,7 +40,7 @@ export function validateName(value) {
 export function validateInstanceId(value) {
   if (
     typeof value !== "string" ||
-    !/^[a-z][a-z0-9_-]{0,63}$/.test(value) ||
+    !/^[a-z][a-z0-9_-]{0,63}$(?![\s\S])/.test(value) ||
     RESERVED_WINDOWS_NAMES.has(value.toLowerCase())
   ) {
     throw error(`Invalid T3 instance ID '${value}'.`, "Use a different profile name.");

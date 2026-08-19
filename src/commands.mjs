@@ -10,7 +10,13 @@ import {
   writeAtomicIfUnchanged,
 } from "./atomic.mjs";
 import { CancelledError, error } from "./errors.mjs";
-import { createLinks, inspectClaudeResources, preflightLinks, verifyClaudeLinks } from "./links.mjs";
+import {
+  createLinks,
+  inspectClaudeResources,
+  preflightLinks,
+  rollbackLinks,
+  verifyClaudeLinks,
+} from "./links.mjs";
 import {
   providerTitle,
   validateName,
@@ -398,7 +404,7 @@ async function confirmStopped(prepared) {
   if (!confirmed) throw new CancelledError();
 }
 
-async function ensureDirectoryChain(target) {
+async function ensureDirectoryChain(target, onCreate) {
   const missing = [];
   let current = path.resolve(target);
   while (true) {
@@ -422,6 +428,7 @@ async function ensureDirectoryChain(target) {
     try {
       await fs.mkdir(directory, { mode: 0o700 });
       created.push(directory);
+      onCreate?.(directory);
     } catch (cause) {
       if (cause?.code !== "EEXIST") throw cause;
       const stats = await lstatOrNull(directory);
@@ -436,29 +443,9 @@ function sameRaw(current, expectedRaw) {
 }
 
 async function removeCreatedArtifacts(prepared, mutation, failures) {
-  const expectedByDestination = new Map(
-    prepared.resources.available.map((resource) => [resource.destination, resource]),
-  );
-  for (const destination of [...mutation.createdLinks].reverse()) {
-    try {
-      const stats = await fs.lstat(destination).catch((cause) => {
-        if (cause?.code === "ENOENT" || cause?.code === "ENOTDIR") return null;
-        throw cause;
-      });
-      if (!stats) continue;
-      if (!stats.isSymbolicLink()) {
-        failures.push({ step: "remove link", path: destination, cause: new Error("destination is no longer a link") });
-        continue;
-      }
-      const expected = expectedByDestination.get(destination);
-      if (expected && !isSamePath(await fs.realpath(destination), expected.realSource)) {
-        failures.push({ step: "remove link", path: destination, cause: new Error("link target changed") });
-        continue;
-      }
-      await fs.unlink(destination);
-    } catch (cause) {
-      failures.push({ step: "remove link", path: destination, cause });
-    }
+  const linkRollbackFailures = await rollbackLinks(mutation.createdLinks);
+  for (const { path: destination, cause } of linkRollbackFailures) {
+    failures.push({ step: "remove link", path: destination, cause });
   }
   for (const directory of [...mutation.createdDirectories].reverse()) {
     try {
@@ -554,8 +541,9 @@ async function mutateAdd(prepared) {
     backupPath: undefined,
   };
   try {
-    mutation.createdDirectories.push(
-      ...(await ensureDirectoryChain(path.join(prepared.managedRoot, "profiles", prepared.provider))),
+    await ensureDirectoryChain(
+      path.join(prepared.managedRoot, "profiles", prepared.provider),
+      (directory) => mutation.createdDirectories.push(directory),
     );
     try {
       await fs.mkdir(prepared.paths.profileHome, { mode: 0o700 });
@@ -574,8 +562,12 @@ async function mutateAdd(prepared) {
       try {
         mutation.createdLinks.push(...await createLinks(prepared.resources.available));
       } catch (linkCause) {
-        for (const destination of linkCause?.createdLinks ?? []) {
-          if (!mutation.createdLinks.includes(destination)) mutation.createdLinks.push(destination);
+        for (const createdLink of linkCause?.createdLinks ?? []) {
+          if (!mutation.createdLinks.some(
+            (link) => link.destination === createdLink.destination,
+          )) {
+            mutation.createdLinks.push(createdLink);
+          }
         }
         throw linkCause;
       }

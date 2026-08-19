@@ -22,8 +22,8 @@ function objectValue(value, label) {
   return value;
 }
 
-const OPEN_SLUG = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
-const ENVIRONMENT_NAME = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+const OPEN_SLUG = /^[a-zA-Z][a-zA-Z0-9_-]*$(?![\s\S])/;
+const ENVIRONMENT_NAME = /^[a-zA-Z_][a-zA-Z0-9_]*$(?![\s\S])/;
 
 function invalidEnvelope(label, detail) {
   throw error(`T3 ${label} is invalid${detail ? `: ${detail}` : "."}`, "Fix settings.json and retry.");
@@ -114,7 +114,21 @@ function existingHomeValue(instance) {
   return config.homePath;
 }
 
+function validateCustomPrimaryHome(document, provider) {
+  const defaultInstanceId = providerDriver(provider);
+  const defaultInstance = document.providerInstances?.[defaultInstanceId];
+  if (defaultInstance === undefined) return;
+  const config = defaultInstance.config;
+  if (config !== undefined && (!config || typeof config !== "object" || Array.isArray(config))) {
+    throw error(
+      `T3 settings field 'providerInstances.${defaultInstanceId}.config' is invalid.`,
+      "Fix settings.json and retry.",
+    );
+  }
+}
+
 export function primaryHomeValues(document, provider) {
+  validateCustomPrimaryHome(document, provider);
   const legacyKey = provider === "claude" ? "claudeAgent" : "codex";
   const defaultInstanceId = providerDriver(provider);
   const legacy = document.providers?.[legacyKey]?.homePath;
