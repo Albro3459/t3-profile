@@ -9,10 +9,12 @@
   "files": [
     "bin",
     "src",
+    "docs",
+    "fixtures",
     "README.md"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=20.10.0"
   },
   "scripts": {
     "start": "node ./bin/t3-profile.mjs",

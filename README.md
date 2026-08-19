@@ -15,7 +15,7 @@ your existing configuration.
 npm install --global @albro3459/t3-profile
 ```
 
-Node.js 20 or newer is required.
+Node.js 20.10.0 or newer is required.
 
 ## Quick start
 
