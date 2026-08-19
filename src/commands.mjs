@@ -76,6 +76,7 @@ import {
   printSynced,
   printSyncSummary,
 } from "./output.mjs";
+import { collectUsage, displayTimezone } from "./usage.mjs";
 
 function requirePositional(command, values, expected) {
   if (values.length !== expected) {
@@ -760,7 +761,18 @@ async function runCommand(options) {
 async function listCommand() {
   const managedRoot = await resolveManagedRoot();
   const registry = await readRegistry(path.join(managedRoot, "profiles.json"));
-  printList(registry.profiles.map((profile) => ({ ...profile, profileHome: displayPath(profile.profileHome) })));
+  if (registry.profiles.length === 0) {
+    printList([]);
+    return;
+  }
+  const timezone = displayTimezone();
+  const usage = await collectUsage(registry.profiles, managedRoot, timezone);
+  printList(registry.profiles.map((profile, index) => ({
+    ...profile,
+    profileHome: displayPath(profile.profileHome),
+    usage: usage[index],
+    displayTimezone: timezone,
+  })));
 }
 
 function desiredInstance(profile) {

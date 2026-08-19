@@ -1,0 +1,21 @@
+{
+  "is_error": false,
+  "duration_api_ms": 0,
+  "num_turns": 1,
+  "stop_reason": null,
+  "session_id": "REDACTED_SESSION_ID",
+  "total_cost_usd": 0,
+  "usage": {},
+  "modelUsage": {},
+  "permission_denials": [],
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "REDACTED",
+  "subtype": "success",
+  "result": {
+    "currentSession": { "usedPercent": 12 },
+    "currentWeek": { "usedPercent": 34 }
+  },
+  "type": "result",
+  "duration_ms": 0,
+  "uuid": "REDACTED_UUID"
+}

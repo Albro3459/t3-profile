@@ -4,8 +4,8 @@ import { error } from "./errors.mjs";
 
 /** Maximum time for local provider version and authentication-status probes (5 seconds by default). */
 export const INSPECT_COMMAND_TIMEOUT_MS = 5_000;
-const INSPECT_COMMAND_TERMINATION_GRACE_MS = 250;
-const INSPECT_COMMAND_FORCE_GRACE_MS = 250;
+export const INSPECT_COMMAND_TERMINATION_GRACE_MS = 250;
+export const INSPECT_COMMAND_FORCE_GRACE_MS = 250;
 
 export function runProvider(binary, argumentsToPass, environment) {
   return new Promise((resolve, reject) => {
