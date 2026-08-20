@@ -769,7 +769,12 @@ async function runCommand(options) {
 }
 
 async function listCommand() {
-  printList(await profilesWithUsage());
+  const managedRoot = await resolveManagedRoot();
+  const registry = await readRegistry(path.join(managedRoot, "profiles.json"));
+  printList(registry.profiles.map((profile) => ({
+    ...profile,
+    profileHome: displayPath(profile.profileHome),
+  })));
 }
 
 async function usageCommand() {
@@ -786,7 +791,6 @@ async function profilesWithUsage() {
   const usage = await collectUsage(registry.profiles, managedRoot, timezone);
   return registry.profiles.map((profile, index) => ({
     ...profile,
-    profileHome: displayPath(profile.profileHome),
     usage: usage[index],
     displayTimezone: timezone,
   }));

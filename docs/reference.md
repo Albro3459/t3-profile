@@ -134,16 +134,16 @@ file link creation is unavailable, or use `--isolated`.
 
 ## List and usage
 
-`list` shows every registered profile, its sharing mode, managed home, usage,
-and reset times. `usage` shows only provider, profile name, usage, and reset
-times, which is useful in narrow terminals.
+`list` shows every registered profile, its sharing mode, and managed home.
+`usage` shows provider, profile name, usage, and reset times in a compact table.
 
 Claude reports five-hour and seven-day usage. Codex reports seven-day usage.
 Reset times use the local timezone and are shown as `8/19 at 11:10 PM`.
-Provider, credential, network, or response errors appear as `unavailable` for
-the affected profile. An inactive Claude session is shown as `5h 0% · not
-started` because its reset timestamp is null until the first message starts the
-session.
+Percentages from 0–33 are green, 34–66 are yellow, and 67–100 are red when
+color output is enabled. Provider, credential, network, or response errors
+appear as `unavailable` for the affected profile. An inactive Claude session
+shows `0` under `%` and `not started` under `RESETS` because its reset timestamp
+is null until the first message starts the session.
 
 Claude usage comes from Anthropic's OAuth usage endpoint. See
 [Claude usage response schema](claude-usage-schema.md) for the supported fields.

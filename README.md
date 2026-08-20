@@ -24,7 +24,7 @@ Node.js 20.10.0 or newer is required.
 t3-profile add claude personal
 t3-profile add codex work
 
-# Show profiles and usage
+# Show profiles
 t3-profile list
 
 # Show only provider usage
@@ -113,9 +113,9 @@ preview settings changes.
 t3-profile doctor codex work
 ```
 
-`list` shows each profile's home, sharing mode, and usage. `usage` shows only
-provider, profile name, usage, and reset times. Claude shows five-hour and
-seven-day usage. Codex shows seven-day usage. A failed usage check appears as
+`list` shows each profile's home and sharing mode. `usage` shows provider,
+profile name, usage, and reset times. Claude shows five-hour and seven-day
+usage. Codex shows seven-day usage. A failed usage check appears as
 `unavailable` without hiding the profile.
 
 See the [tested support matrix](docs/support.md) for verified versions and
