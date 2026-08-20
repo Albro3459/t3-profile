@@ -26,7 +26,9 @@ recovery is not implemented or tested because its credential backend is
 configurable. The lock check is deliberately conservative: it first confirms
 the matching item in the resolved login Keychain, then accepts only the known
 Security statuses -25308 or -25315, the observed macOS 26 process status 24,
-and bounded known `security` diagnostics.
+and bounded known `security` diagnostics. When `security` is run through SSH,
+the negative statuses can be exposed by the shell as their 8-bit process
+statuses 36 (`-25308`) or 29 (`-25315`), so those statuses are accepted too.
 If `/usr/bin/security` cannot make that confirmation, recovery is skipped.
 
 The response is a JSON object. The supported window fields are:

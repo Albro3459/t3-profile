@@ -147,6 +147,10 @@ its credential backend is configurable, so the orchestration remains provider-ne
 Claude authentication writes to the macOS Keychain whenever the login Keychain
 is unlocked, including over SSH. When it is locked, Claude falls back to
 `.credentials.json`; SSH itself does not select the storage backend.
+The recovery check confirms the exact Keychain item before classifying a locked
+secret. It recognizes Security statuses `-25308` and `-25315`, macOS process
+status `24`, and SSH-exposed 8-bit statuses `36` (`-25308`) and `29`
+(`-25315`).
 
 Claude reports five-hour and seven-day usage. Codex reports seven-day usage.
 Reset times use the local timezone and are shown as `8/19 at 11:10 PM`.

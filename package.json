@@ -1,6 +1,6 @@
 {
   "name": "@albro3459/t3-profile",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Manage Claude and Codex subscription profiles for T3 Code",
   "type": "module",
   "bin": {

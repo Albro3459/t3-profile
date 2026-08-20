@@ -8,9 +8,11 @@ export const KEYCHAIN_TIMEOUT_MS = 2_000;
 export const KEYCHAIN_OUTPUT_LIMIT_BYTES = 65_536;
 
 const LOCKED_SECURITY_CODES = Object.freeze(new Set([-25308, -25315]));
-// macOS 26 returns this process status with no diagnostic when a confirmed
-// item's secret is requested from a locked Keychain.
-const LOCKED_SECURITY_EXIT_CODES = Object.freeze(new Set([24]));
+// macOS 26 can return 24 with no diagnostic when a confirmed item's secret is
+// requested from a locked Keychain. Over SSH, security may instead expose the
+// negative OSStatus values -25315 and -25308 as their 8-bit process statuses:
+// 29 and 36 respectively.
+const LOCKED_SECURITY_EXIT_CODES = Object.freeze(new Set([24, 29, 36]));
 const LOCKED_DIAGNOSTICS = Object.freeze([
   "interaction is not allowed",
   "user interaction is not allowed",
