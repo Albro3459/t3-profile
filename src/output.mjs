@@ -25,7 +25,7 @@ Usage:
   t3-profile auth <claude|codex> <name>
   t3-profile run <claude|codex> <name> [-- provider arguments]
   t3-profile list
-  t3-profile usage
+  t3-profile usage [--no-keychain-prompt]
   t3-profile sync [--dry-run] [--yes]
   t3-profile doctor [<claude|codex> <name>]
   t3-profile remove <claude|codex> <name> [--yes]
@@ -37,6 +37,8 @@ Options:
   --isolated     Create an independent profile without shared resources.
   --skip-auth    Create the profile without starting provider authentication.
   --dry-run      Show the changes sync would make without writing them.
+  --no-keychain-prompt
+                 Keep locked Keychain profiles unavailable without prompting.
   --yes          For add, select standard sharing. For add, sync, or remove,
                  assert that T3 is stopped and accept the command's other
                  confirmations. Validation and drift checks still run.

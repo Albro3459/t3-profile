@@ -8,10 +8,26 @@ Authorization: Bearer <claudeAiOauth.accessToken>
 anthropic-beta: oauth-2025-04-20
 ```
 
-The access token is read only from the selected managed profile's regular
-`.credentials.json` file. The token is never printed, persisted, or included
-in errors. A missing, redirected, malformed, or unreadable credential file
-makes that profile's usage unavailable.
+On macOS, Claude authentication writes to the selected managed profile's
+Claude Code Keychain item whenever the login Keychain is unlocked, including
+over SSH. When it is locked, Claude falls back to the profile's regular
+`.credentials.json` file; SSH itself does not select the storage backend. The
+item name is derived from the profile home using the same path hash as the
+tested Claude Code version. Other platforms use the credential file directly.
+The token is kept only in memory and is never printed, persisted, or included
+in errors. Missing, redirected, malformed, or unreadable credentials make that
+profile's usage unavailable.
+
+The usage command can identify a matching item whose secret is inaccessible
+because the confirmed login Keychain is locked. In an eligible interactive
+terminal it may ask once whether to unlock it, retry all providers and
+profiles, and relock it afterward. Relocking is best effort; Codex Keychain
+recovery is not implemented or tested because its credential backend is
+configurable. The lock check is deliberately conservative: it first confirms
+the matching item in the resolved login Keychain, then accepts only the known
+Security statuses -25308 or -25315, the observed macOS 26 process status 24,
+and bounded known `security` diagnostics.
+If `/usr/bin/security` cannot make that confirmation, recovery is skipped.
 
 The response is a JSON object. The supported window fields are:
 
@@ -35,8 +51,12 @@ ISO-8601 timestamp. The adapter normalizes `five_hour` to `five_hour` and
 The success fixture is [claude-usage-success.json](../fixtures/claude-usage-success.json).
 The partial fixture omits `seven_day`. The malformed fixture uses an invalid
 percentage and reset timestamp. Invalid fields affect only their labeled
-window. HTTP, credential, timeout, JSON, and unsupported-response failures
-make the complete usage check unavailable.
+window. On HTTP 401, the adapter invokes the selected profile's native Claude
+Code `/usage` command once without session persistence, discards its output,
+rereads the credential, and retries the typed endpoint once if the access token
+changed. This delegates refresh-token rotation and credential locking to
+Claude Code. Other HTTP, credential, timeout, JSON, and unsupported-response
+failures make the complete usage check unavailable.
 
 ## Observed inactive-session response
 
@@ -82,4 +102,5 @@ captured an inactive weekly window, but expect the symmetric representation:
 This endpoint is undocumented and may be rate-limited or changed by Anthropic.
 The direct API path is intentional: the `claude -p "/usage" --output-format
 json` envelope currently places human-formatted text in `.result`, which is not
-a stable machine-readable schema.
+a stable machine-readable schema. The native command is used only for bounded
+401 recovery; its human-formatted output is never parsed.

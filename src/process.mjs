@@ -26,6 +26,28 @@ export function runProvider(binary, argumentsToPass, environment) {
   });
 }
 
+export function runInteractiveCommand(binary, argumentsToPass, environment = process.env) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    try {
+      const child = spawn(binary, argumentsToPass, {
+        env: environment,
+        stdio: "inherit",
+        shell: false,
+      });
+      child.once("error", () => finish(1));
+      child.once("close", (code, signal) => finish(signal ? 1 : code ?? 1));
+    } catch {
+      finish(1);
+    }
+  });
+}
+
 export function inspectCommand(
   binary,
   argumentsToPass,

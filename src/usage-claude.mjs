@@ -1,15 +1,32 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import { readClaudeKeychainItem } from "./keychain.mjs";
+import { inspectCommand } from "./process.mjs";
+import { providerBinary } from "./providers.mjs";
 import { VERSION } from "./version.mjs";
 
 export const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 export const CLAUDE_USAGE_BETA_HEADER = "oauth-2025-04-20";
 export const CLAUDE_USAGE_OUTPUT_LIMIT_BYTES = 65_536;
 export const CLAUDE_USAGE_TIMEOUT_MS = 5_000;
+export const CLAUDE_KEYCHAIN_TIMEOUT_MS = 2_000;
+export const CLAUDE_USAGE_REFRESH_ARGUMENTS = Object.freeze([
+  "-p",
+  "/usage",
+  "--output-format",
+  "json",
+  "--no-session-persistence",
+]);
 
-function unavailable() {
-  return { status: "unavailable", windows: [] };
+export const CLAUDE_RECOVERY_KEYCHAIN_LOCKED = "keychain-locked";
+
+function unavailable(recovery) {
+  const result = { status: "unavailable", windows: [] };
+  if (recovery === CLAUDE_RECOVERY_KEYCHAIN_LOCKED) {
+    result.recovery = { kind: CLAUDE_RECOVERY_KEYCHAIN_LOCKED };
+  }
+  return result;
 }
 
 function isObject(value) {
@@ -61,22 +78,8 @@ export function parseClaudeUsageResponse(response) {
   };
 }
 
-async function readAccessToken(profileHome) {
-  const credentialsPath = path.join(profileHome, ".credentials.json");
-  let stats;
-  try {
-    stats = await fs.lstat(credentialsPath);
-  } catch {
-    return null;
-  }
-  if (!stats.isFile() || stats.isSymbolicLink()) return null;
-  let raw;
-  try {
-    raw = await fs.readFile(credentialsPath, "utf8");
-  } catch {
-    return null;
-  }
-  if (Buffer.byteLength(raw) > CLAUDE_USAGE_OUTPUT_LIMIT_BYTES) return null;
+function parseAccessToken(raw) {
+  if (typeof raw !== "string" || Buffer.byteLength(raw) > CLAUDE_USAGE_OUTPUT_LIMIT_BYTES) return null;
   try {
     const value = JSON.parse(raw);
     const token = value?.claudeAiOauth?.accessToken;
@@ -86,8 +89,54 @@ async function readAccessToken(profileHome) {
   }
 }
 
+async function readFileAccessToken(profileHome) {
+  const credentialsPath = path.join(profileHome, ".credentials.json");
+  let stats;
+  try {
+    stats = await fs.lstat(credentialsPath);
+  } catch {
+    return { token: null, present: false };
+  }
+  if (!stats.isFile() || stats.isSymbolicLink()) return { token: null, present: false };
+  let raw;
+  try {
+    raw = await fs.readFile(credentialsPath, "utf8");
+  } catch {
+    return { token: null, present: true };
+  }
+  return { token: parseAccessToken(raw), present: true };
+}
+
+async function readAccessToken(profileHome, {
+  environment = process.env,
+  inspect = inspectCommand,
+  platform = process.platform,
+  keychainPath = null,
+} = {}) {
+  let keychainState = "unsupported";
+  if (platform === "darwin") {
+    const keychain = await readClaudeKeychainItem({
+      profileHome,
+      keychainPath,
+      environment,
+      inspect,
+      platform,
+    });
+    keychainState = keychain.state;
+    const keychainToken = parseAccessToken(keychain.raw);
+    if (keychainToken) return { token: keychainToken, source: "keychain", keychainState };
+  }
+  const file = await readFileAccessToken(profileHome);
+  return {
+    token: file.token,
+    source: file.token ? "file" : null,
+    filePresent: file.present,
+    keychainState,
+  };
+}
+
 async function fetchUsageResponse(accessToken, fetchImpl = globalThis.fetch) {
-  if (typeof fetchImpl !== "function") return null;
+  if (typeof fetchImpl !== "function") return { kind: "unavailable" };
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), CLAUDE_USAGE_TIMEOUT_MS);
   try {
@@ -96,32 +145,104 @@ async function fetchUsageResponse(accessToken, fetchImpl = globalThis.fetch) {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         "anthropic-beta": CLAUDE_USAGE_BETA_HEADER,
-        "User-Agent": `claude-code/${VERSION}`,
+        "User-Agent": `t3-profile/${VERSION}`,
       },
       signal: controller.signal,
     });
-    if (!response?.ok || typeof response.text !== "function") return null;
+    if (!response?.ok) {
+      return { kind: response?.status === 401 ? "unauthorized" : "unavailable" };
+    }
+    if (typeof response.text !== "function") return { kind: "unavailable" };
     const raw = await response.text();
-    if (Buffer.byteLength(raw) > CLAUDE_USAGE_OUTPUT_LIMIT_BYTES) return null;
-    return JSON.parse(raw);
+    if (Buffer.byteLength(raw) > CLAUDE_USAGE_OUTPUT_LIMIT_BYTES) return { kind: "unavailable" };
+    return { kind: "available", response: JSON.parse(raw) };
   } catch {
-    return null;
+    return { kind: "unavailable" };
   } finally {
     clearTimeout(timeout);
   }
 }
 
-export async function claudeUsageAdapter({ canonicalProfileHome, fetchImpl = globalThis.fetch }) {
+async function refreshAccessToken(environment, inspect) {
   try {
-    const accessToken = await readAccessToken(canonicalProfileHome);
-    if (!accessToken) return unavailable();
-    const response = await fetchUsageResponse(accessToken, fetchImpl);
-    return response === null ? unavailable() : parseClaudeUsageResponse(response);
+    const result = await inspect(
+      providerBinary("claude"),
+      CLAUDE_USAGE_REFRESH_ARGUMENTS,
+      environment,
+      CLAUDE_USAGE_TIMEOUT_MS,
+    );
+    if (!result?.found || result.code !== 0 || result.timedOut) return false;
+    if (typeof result.stdout !== "string" || typeof result.stderr !== "string") return false;
+    return Buffer.byteLength(result.stdout) <= CLAUDE_USAGE_OUTPUT_LIMIT_BYTES &&
+      Buffer.byteLength(result.stderr) <= CLAUDE_USAGE_OUTPUT_LIMIT_BYTES;
+  } catch {
+    return false;
+  }
+}
+
+export async function claudeUsageAdapter({
+  canonicalProfileHome,
+  environment = process.env,
+  fetchImpl = globalThis.fetch,
+  inspect = inspectCommand,
+  platform = process.platform,
+  keychainPath = null,
+}) {
+  try {
+    const credentials = await readAccessToken(canonicalProfileHome, { environment, inspect, platform, keychainPath });
+    if (!credentials.token) {
+      return unavailable(keychainPath && credentials.keychainState === "locked"
+        ? CLAUDE_RECOVERY_KEYCHAIN_LOCKED
+        : undefined);
+    }
+    const firstAttempt = await fetchUsageResponse(credentials.token, fetchImpl);
+    if (firstAttempt.kind === "available") return parseClaudeUsageResponse(firstAttempt.response);
+    if (firstAttempt.kind !== "unauthorized") return unavailable();
+
+    // Claude owns refresh-token rotation and storage locking; let it refresh
+    // the selected profile, then retry the typed endpoint with the new token.
+    if (!(await refreshAccessToken(environment, inspect))) {
+      const keychain = await readClaudeKeychainItem({
+        profileHome: canonicalProfileHome,
+        keychainPath,
+        environment,
+        inspect,
+        platform,
+      });
+      return unavailable(credentials.source === "file" && keychainPath && keychain.state === "locked"
+        ? CLAUDE_RECOVERY_KEYCHAIN_LOCKED
+        : undefined);
+    }
+    const refreshedCredentials = await readAccessToken(canonicalProfileHome, { environment, inspect, platform, keychainPath });
+    const refreshedToken = refreshedCredentials.token;
+    if (!refreshedToken || refreshedToken === credentials.token) {
+      const keychain = await readClaudeKeychainItem({
+        profileHome: canonicalProfileHome,
+        keychainPath,
+        environment,
+        inspect,
+        platform,
+      });
+      return unavailable(credentials.source === "file" && keychainPath && keychain.state === "locked"
+        ? CLAUDE_RECOVERY_KEYCHAIN_LOCKED
+        : undefined);
+    }
+    const secondAttempt = await fetchUsageResponse(refreshedToken, fetchImpl);
+    return secondAttempt.kind === "available"
+      ? parseClaudeUsageResponse(secondAttempt.response)
+      : unavailable();
   } catch {
     return unavailable();
   }
 }
 
 export function createClaudeUsageAdapter() {
-  return ({ canonicalProfileHome, fetchImpl }) => claudeUsageAdapter({ canonicalProfileHome, fetchImpl });
+  return ({ canonicalProfileHome, environment, fetchImpl, inspect, platform, keychainPath }) => claudeUsageAdapter({
+    canonicalProfileHome,
+    environment,
+    fetchImpl,
+    inspect,
+    platform,
+    keychainPath,
+  });
 }

@@ -7,7 +7,7 @@ t3-profile add <claude|codex> <name> [--home <path>] [--isolated] [--skip-auth] 
 t3-profile auth <claude|codex> <name>
 t3-profile run <claude|codex> <name> [-- provider arguments]
 t3-profile list
-t3-profile usage
+t3-profile usage [--no-keychain-prompt]
 t3-profile sync [--dry-run] [--yes]
 t3-profile doctor [<claude|codex> <name>]
 t3-profile remove <claude|codex> <name> [--yes]
@@ -136,6 +136,17 @@ file link creation is unavailable, or use `--isolated`.
 
 `list` shows every registered profile, its sharing mode, and managed home.
 `usage` shows provider, profile name, usage, and reset times in a compact table.
+The first usage pass is noninteractive. If unavailable profiles have matching
+Claude credentials in a locked macOS Keychain, an interactive terminal asks
+whether to temporarily unlock it, retries all providers and profiles, and
+locks that Keychain again afterward on a best-effort basis. Declining,
+cancelling, piping, CI, and `usage --no-keychain-prompt` preserve the
+unavailable results. Codex Keychain recovery is not implemented or tested;
+its credential backend is configurable, so the orchestration remains provider-neutral.
+
+Claude authentication writes to the macOS Keychain whenever the login Keychain
+is unlocked, including over SSH. When it is locked, Claude falls back to
+`.credentials.json`; SSH itself does not select the storage backend.
 
 Claude reports five-hour and seven-day usage. Codex reports seven-day usage.
 Reset times use the local timezone and are shown as `8/19 at 11:10 PM`.

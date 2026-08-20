@@ -1,7 +1,8 @@
 import { makeEnvironment } from "./providers.mjs";
 import { isSamePath, pathsFor, validateManagedProfileChain } from "./paths.mjs";
 import { inspectCodexUsage } from "./codex-usage.mjs";
-import { createClaudeUsageAdapter } from "./usage-claude.mjs";
+import { readClaudeKeychainItem, resolveLoginKeychain } from "./keychain.mjs";
+import { CLAUDE_RECOVERY_KEYCHAIN_LOCKED, createClaudeUsageAdapter } from "./usage-claude.mjs";
 
 export const USAGE_WINDOW_IDS = Object.freeze(["five_hour", "week"]);
 export const usageAdapters = {
@@ -80,11 +81,15 @@ function normalizeResult(result) {
     if (ids.has(window.id)) return { status: "unavailable", windows: [] };
     ids.add(window.id);
   }
-  if (result.status === "unavailable" && windows.length === 0) return { status: "unavailable", windows: [] };
+  if (result.status === "unavailable" && windows.length === 0) {
+    return result.recovery?.kind === CLAUDE_RECOVERY_KEYCHAIN_LOCKED
+      ? { status: "unavailable", windows: [], recovery: { kind: CLAUDE_RECOVERY_KEYCHAIN_LOCKED } }
+      : { status: "unavailable", windows: [] };
+  }
   return { status: "available", windows };
 }
 
-async function collectProfileUsage(profile, managedRoot, timezone) {
+async function collectProfileUsage(profile, managedRoot, timezone, keychainPath = null) {
   try {
     const expected = pathsFor({
       provider: profile.provider,
@@ -109,6 +114,7 @@ async function collectProfileUsage(profile, managedRoot, timezone) {
       canonicalProfileHome,
       environment: makeEnvironment(profile.provider, canonicalProfileHome),
       displayTimezone: timezone,
+      keychainPath,
     });
     return normalizeResult(result);
   } catch {
@@ -116,7 +122,7 @@ async function collectProfileUsage(profile, managedRoot, timezone) {
   }
 }
 
-export async function collectUsage(profiles, managedRoot, timezone = displayTimezone()) {
+async function collectUsageResults(profiles, managedRoot, timezone, keychainPath = null) {
   const results = new Array(profiles.length);
   let next = 0;
   const workerCount = Math.min(4, profiles.length);
@@ -125,11 +131,60 @@ export async function collectUsage(profiles, managedRoot, timezone = displayTime
       const index = next;
       next += 1;
       if (index >= profiles.length) return;
-      results[index] = await collectProfileUsage(profiles[index], managedRoot, timezone);
+      results[index] = await collectProfileUsage(profiles[index], managedRoot, timezone, keychainPath);
     }
   }
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
   return results;
+}
+
+export async function collectUsage(profiles, managedRoot, timezone = displayTimezone(), keychainPath = null) {
+  return collectUsageResults(profiles, managedRoot, timezone, keychainPath);
+}
+
+export async function collectUsageWithDiagnostics(profiles, managedRoot, timezone = displayTimezone()) {
+  if (process.platform !== "darwin" || !profiles.some((profile) => profile.provider === "claude")) {
+    return { results: await collectUsageResults(profiles, managedRoot, timezone), keychainPath: null, lockedProfiles: [] };
+  }
+
+  const keychainPath = await resolveLoginKeychain();
+  const results = await collectUsageResults(profiles, managedRoot, timezone, keychainPath);
+  const lockedProfiles = results
+    .map((result, index) => result?.recovery?.kind === CLAUDE_RECOVERY_KEYCHAIN_LOCKED ? index : null)
+    .filter((index) => index !== null);
+  return { results, keychainPath, lockedProfiles };
+}
+
+export async function countLockedUsageProfiles(profiles, managedRoot, keychainPath) {
+  if (process.platform !== "darwin" || typeof keychainPath !== "string") return 0;
+  let count = 0;
+  for (const profile of profiles) {
+    if (profile.usage?.recovery?.kind !== CLAUDE_RECOVERY_KEYCHAIN_LOCKED || profile.provider !== "claude") continue;
+    try {
+      const expected = pathsFor({
+        provider: profile.provider,
+        name: profile.name,
+        sourceHome: profile.sourceHome,
+        managedRoot,
+      });
+      if (!isSamePath(profile.profileHome, expected.profileHome)) continue;
+      const chain = await validateManagedProfileChain({
+        managedRoot,
+        provider: profile.provider,
+        name: profile.name,
+        requireHome: true,
+      });
+      const item = await readClaudeKeychainItem({
+        profileHome: chain.profileHome.canonical,
+        keychainPath,
+        environment: makeEnvironment(profile.provider, chain.profileHome.canonical),
+      });
+      if (item.state === "locked") count += 1;
+    } catch {
+      // A failed recheck leaves the first-pass result unchanged and suppresses recovery.
+    }
+  }
+  return count;
 }
 
 export function formatResetTime(value, timezone) {

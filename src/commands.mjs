@@ -76,8 +76,15 @@ import {
   printSynced,
   printSyncSummary,
   printUsage,
+  writeError,
 } from "./output.mjs";
-import { collectUsage, displayTimezone } from "./usage.mjs";
+import {
+  collectUsage,
+  collectUsageWithDiagnostics,
+  countLockedUsageProfiles,
+  displayTimezone,
+} from "./usage.mjs";
+import { lockKeychain, unlockKeychain } from "./keychain.mjs";
 import { TESTED_PLATFORM, TESTED_PROVIDER_VERSIONS } from "./support.mjs";
 
 function requirePositional(command, values, expected) {
@@ -99,8 +106,12 @@ export function parseArguments(argv) {
     return { command };
   }
   if (command === "usage") {
-    requirePositional(command, rest, 0);
-    return { command };
+    let noKeychainPrompt = false;
+    for (const value of rest) {
+      if (value === "--no-keychain-prompt") noKeychainPrompt = true;
+      else throw error(`Unknown option '${value}'.`, "Use 't3-profile help' for usage.");
+    }
+    return { command, noKeychainPrompt };
   }
   if (command === "doctor") {
     if (rest.length !== 0 && rest.length !== 2) {
@@ -192,8 +203,26 @@ async function pathExistsAsDirectory(value) {
   return stats?.isDirectory() ?? false;
 }
 
-async function prompt(question, defaultValue = false) {
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+function runningInCi() {
+  return [
+    "CI",
+    "CONTINUOUS_INTEGRATION",
+    "GITHUB_ACTIONS",
+    "GITLAB_CI",
+    "JENKINS_URL",
+    "BUILDKITE",
+    "TF_BUILD",
+    "CODEBUILD_BUILD_ID",
+  ].some((name) => process.env[name]);
+}
+
+function hasInteractiveTerminal() {
+  return !runningInCi() && process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY;
+}
+
+async function prompt(question, defaultValue = false, { nonInteractiveDefault = null } = {}) {
+  if (!hasInteractiveTerminal()) {
+    if (nonInteractiveDefault !== null) return nonInteractiveDefault;
     throw error(
       "This command needs interactive confirmation.",
       "Run it in an interactive terminal or pass --yes when that option is supported.",
@@ -777,23 +806,111 @@ async function listCommand() {
   })));
 }
 
-async function usageCommand() {
-  printUsage(await profilesWithUsage());
+async function usageCommand({ noKeychainPrompt = false } = {}) {
+  const firstPass = await profilesWithUsage({ withKeychainDiagnostics: true });
+  const lockedCount = noKeychainPrompt || firstPass.lockedProfiles.length === 0
+    ? 0
+    : await countLockedUsageProfiles(firstPass.profiles, firstPass.managedRoot, firstPass.keychainPath);
+  if (noKeychainPrompt || lockedCount === 0 || !firstPass.keychainPath) {
+    printUsage(firstPass.profiles);
+    return;
+  }
+
+  let confirmed = false;
+  try {
+    confirmed = await prompt(
+      `${lockedCount} profile${lockedCount === 1 ? "" : "s"} are unavailable because the Keychain is locked. Temporarily unlock it and retry usage? [y/N] `,
+      false,
+      { nonInteractiveDefault: false },
+    );
+  } catch {
+    confirmed = false;
+  }
+  if (!confirmed) {
+    printUsage(firstPass.profiles);
+    return;
+  }
+
+  const lockedAfterConfirmation = await countLockedUsageProfiles(
+    firstPass.profiles,
+    firstPass.managedRoot,
+    firstPass.keychainPath,
+  );
+  if (lockedAfterConfirmation === 0) {
+    const retried = await profilesWithUsage({ keychainPath: firstPass.keychainPath });
+    printUsage(retried.profiles);
+    return;
+  }
+
+  const retrySignals = installRetrySignalHandlers();
+  const unlocked = await unlockKeychain({ keychainPath: firstPass.keychainPath });
+  if (!unlocked) {
+    retrySignals.restore();
+    printUsage(firstPass.profiles);
+    return;
+  }
+  let exitCode = 0;
+  try {
+    const retried = await profilesWithUsage({ keychainPath: firstPass.keychainPath });
+    printUsage(retried.profiles);
+  } finally {
+    let relocked = false;
+    try {
+      relocked = await lockKeychain({ keychainPath: firstPass.keychainPath });
+      if (!relocked) relocked = await lockKeychain({ keychainPath: firstPass.keychainPath });
+    } catch {
+      relocked = false;
+    }
+    if (!relocked) {
+      writeError("Warning: The Keychain may remain unlocked; automatic relocking failed.");
+      exitCode = 1;
+    }
+    if (retrySignals.interrupted()) exitCode = 1;
+    retrySignals.restore();
+  }
+  return exitCode || undefined;
 }
 
-async function profilesWithUsage() {
+function installRetrySignalHandlers() {
+  let interrupted = false;
+  const handleSignal = () => {
+    interrupted = true;
+  };
+  process.on("SIGINT", handleSignal);
+  process.on("SIGTERM", handleSignal);
+  return {
+    interrupted: () => interrupted,
+    restore: () => {
+      process.removeListener("SIGINT", handleSignal);
+      process.removeListener("SIGTERM", handleSignal);
+    },
+  };
+}
+
+async function profilesWithUsage({ withKeychainDiagnostics = false, keychainPath = null } = {}) {
   const managedRoot = await resolveManagedRoot();
   const registry = await readRegistry(path.join(managedRoot, "profiles.json"));
   if (registry.profiles.length === 0) {
-    return [];
+    return { profiles: [], keychainPath: null, lockedProfiles: [] };
   }
   const timezone = displayTimezone();
-  const usage = await collectUsage(registry.profiles, managedRoot, timezone);
-  return registry.profiles.map((profile, index) => ({
-    ...profile,
-    usage: usage[index],
-    displayTimezone: timezone,
-  }));
+  const collection = withKeychainDiagnostics
+    ? await collectUsageWithDiagnostics(registry.profiles, managedRoot, timezone)
+    : {
+      results: await collectUsage(registry.profiles, managedRoot, timezone, keychainPath),
+      keychainPath: null,
+      lockedProfiles: [],
+    };
+  return {
+    managedRoot,
+    profiles: registry.profiles.map((profile, index) => ({
+      ...profile,
+      usage: collection.results[index],
+      displayTimezone: timezone,
+    })),
+    keychainPath: collection.keychainPath,
+    lockedProfiles: collection.lockedProfiles,
+  };
 }
 
 function desiredInstance(profile) {
@@ -1415,7 +1532,7 @@ export async function dispatch(options) {
   if (options.command === "auth") return authCommand(options);
   if (options.command === "run") return runCommand(options);
   if (options.command === "list") return listCommand();
-  if (options.command === "usage") return usageCommand();
+  if (options.command === "usage") return usageCommand(options);
   if (options.command === "sync") return syncCommand(options);
   if (options.command === "doctor") return doctorCommand(options);
   if (options.command === "remove") return removeCommand(options);
