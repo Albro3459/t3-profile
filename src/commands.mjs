@@ -75,6 +75,7 @@ import {
   printRemoveSummary,
   printSynced,
   printSyncSummary,
+  printUsage,
 } from "./output.mjs";
 import { collectUsage, displayTimezone } from "./usage.mjs";
 import { TESTED_PLATFORM, TESTED_PROVIDER_VERSIONS } from "./support.mjs";
@@ -94,6 +95,10 @@ export function parseArguments(argv) {
   }
   const [command, ...rest] = argv;
   if (command === "list") {
+    requirePositional(command, rest, 0);
+    return { command };
+  }
+  if (command === "usage") {
     requirePositional(command, rest, 0);
     return { command };
   }
@@ -764,20 +769,27 @@ async function runCommand(options) {
 }
 
 async function listCommand() {
+  printList(await profilesWithUsage());
+}
+
+async function usageCommand() {
+  printUsage(await profilesWithUsage());
+}
+
+async function profilesWithUsage() {
   const managedRoot = await resolveManagedRoot();
   const registry = await readRegistry(path.join(managedRoot, "profiles.json"));
   if (registry.profiles.length === 0) {
-    printList([]);
-    return;
+    return [];
   }
   const timezone = displayTimezone();
   const usage = await collectUsage(registry.profiles, managedRoot, timezone);
-  printList(registry.profiles.map((profile, index) => ({
+  return registry.profiles.map((profile, index) => ({
     ...profile,
     profileHome: displayPath(profile.profileHome),
     usage: usage[index],
     displayTimezone: timezone,
-  })));
+  }));
 }
 
 function desiredInstance(profile) {
@@ -1399,6 +1411,7 @@ export async function dispatch(options) {
   if (options.command === "auth") return authCommand(options);
   if (options.command === "run") return runCommand(options);
   if (options.command === "list") return listCommand();
+  if (options.command === "usage") return usageCommand();
   if (options.command === "sync") return syncCommand(options);
   if (options.command === "doctor") return doctorCommand(options);
   if (options.command === "remove") return removeCommand(options);

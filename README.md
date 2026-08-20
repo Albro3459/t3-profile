@@ -27,6 +27,9 @@ t3-profile add codex work
 # Show profiles and usage
 t3-profile list
 
+# Show only provider usage
+t3-profile usage
+
 # Re-authenticate an existing profile
 t3-profile auth claude personal
 t3-profile auth codex work
@@ -110,9 +113,10 @@ preview settings changes.
 t3-profile doctor codex work
 ```
 
-`list` shows each profile's home, sharing mode, and usage. Claude
-shows five-hour and weekly usage. Codex shows weekly usage. A failed usage check
-appears as `unavailable` without hiding the profile.
+`list` shows each profile's home, sharing mode, and usage. `usage` shows only
+provider, profile name, usage, and reset times. Claude shows five-hour and
+seven-day usage. Codex shows seven-day usage. A failed usage check appears as
+`unavailable` without hiding the profile.
 
 See the [tested support matrix](docs/support.md) for verified versions and
 platforms.

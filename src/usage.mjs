@@ -136,14 +136,16 @@ export function formatResetTime(value, timezone) {
   const date = validDate(value);
   if (!date) return null;
   try {
-    return `${new Intl.DateTimeFormat("en-US", {
+    const parts = new Intl.DateTimeFormat("en-US", {
       timeZone: timezone,
-      month: "short",
+      month: "numeric",
       day: "numeric",
       hour: "numeric",
       minute: "2-digit",
       hour12: true,
-    }).format(date)} ${timezone}`;
+    }).formatToParts(date);
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${values.month}/${values.day} at ${values.hour}:${values.minute} ${values.dayPeriod}`;
   } catch {
     return null;
   }

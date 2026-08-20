@@ -7,6 +7,7 @@ t3-profile add <claude|codex> <name> [--home <path>] [--isolated] [--skip-auth] 
 t3-profile auth <claude|codex> <name>
 t3-profile run <claude|codex> <name> [-- provider arguments]
 t3-profile list
+t3-profile usage
 t3-profile sync [--dry-run] [--yes]
 t3-profile doctor [<claude|codex> <name>]
 t3-profile remove <claude|codex> <name> [--yes]
@@ -29,8 +30,8 @@ These operations ask you to confirm that T3 is stopped. Passing `--yes` makes
 that assertion non-interactively. It also accepts the command's other
 confirmations. Validation and drift checks still run.
 
-`sync --dry-run`, a sync with no changes, `list`, `doctor`, `auth`, and `run`
-do not require T3 to be stopped.
+`sync --dry-run`, a sync with no changes, `list`, `usage`, `doctor`, `auth`, and
+`run` do not require T3 to be stopped.
 
 T3 settings are backed up before changes. Restart T3 Code after `add`, `sync`,
 or `remove` completes.
@@ -134,13 +135,15 @@ file link creation is unavailable, or use `--isolated`.
 ## List and usage
 
 `list` shows every registered profile, its sharing mode, managed home, usage,
-and reset times.
+and reset times. `usage` shows only provider, profile name, usage, and reset
+times, which is useful in narrow terminals.
 
-Claude reports five-hour and weekly usage. Codex reports weekly usage. Reset
-times use the local IANA timezone. Provider, credential, network, or response
-errors appear as `unavailable` for the affected profile. An inactive Claude
-session is shown as `5h 0% · not started` because its reset timestamp is null
-until the first message starts the session.
+Claude reports five-hour and seven-day usage. Codex reports seven-day usage.
+Reset times use the local timezone and are shown as `8/19 at 11:10 PM`.
+Provider, credential, network, or response errors appear as `unavailable` for
+the affected profile. An inactive Claude session is shown as `5h 0% · not
+started` because its reset timestamp is null until the first message starts the
+session.
 
 Claude usage comes from Anthropic's OAuth usage endpoint. See
 [Claude usage response schema](claude-usage-schema.md) for the supported fields.
