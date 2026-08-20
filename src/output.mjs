@@ -220,6 +220,10 @@ function renderUsage(usage, timezone = "UTC") {
     const window = byId.get(id);
     if (!window) continue;
     const label = id === "five_hour" ? "5h" : "week";
+    if (window.status === "inactive") {
+      lines.push(`${label} 0% · not started`);
+      continue;
+    }
     if (window.status !== "available") {
       lines.push(`${label} unavailable`);
       continue;

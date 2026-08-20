@@ -18,7 +18,8 @@ export const usageAdapters = {
   },
 };
 
-// Adapters return { status, windows }, with reset values in epoch milliseconds.
+// Adapters return { status, windows }, with reset values in epoch milliseconds;
+// inactive windows have a null reset and have not started yet.
 // A provider failure uses status "unavailable" and no windows; partial results
 // can include labeled windows with status "unavailable".
 export function registerUsageAdapter(provider, adapter) {
@@ -53,6 +54,11 @@ function validDate(value) {
 function normalizeWindow(window) {
   if (!window || typeof window !== "object" || !USAGE_WINDOW_IDS.includes(window.id)) return null;
   if (window.status === "unavailable") return { id: window.id, status: "unavailable" };
+  if (window.status === "inactive") {
+    return window.percent === 0 && window.resetsAt === null
+      ? { id: window.id, status: "inactive", percent: 0, resetsAt: null }
+      : { id: window.id, status: "unavailable" };
+  }
   if (window.status !== "available") return { id: window.id, status: "unavailable" };
   const date = validDate(window.resetsAt);
   if (!validPercentage(window.percent) || !date) return { id: window.id, status: "unavailable" };

@@ -138,7 +138,9 @@ and reset times.
 
 Claude reports five-hour and weekly usage. Codex reports weekly usage. Reset
 times use the local IANA timezone. Provider, credential, network, or response
-errors appear as `unavailable` for the affected profile.
+errors appear as `unavailable` for the affected profile. An inactive Claude
+session is shown as `5h 0% · not started` because its reset timestamp is null
+until the first message starts the session.
 
 Claude usage comes from Anthropic's OAuth usage endpoint. See
 [Claude usage response schema](claude-usage-schema.md) for the supported fields.

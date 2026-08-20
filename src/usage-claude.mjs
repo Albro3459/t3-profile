@@ -26,10 +26,15 @@ function parseWindow(id, value) {
   if (typeof value.utilization !== "number" ||
       !Number.isFinite(value.utilization) ||
       value.utilization < 0 ||
-      value.utilization > 100 ||
-      !validReset(value.resets_at)) {
+      value.utilization > 100) {
     return { id, status: "unavailable" };
   }
+  if (value.resets_at === null || value.resets_at === undefined) {
+    return value.utilization === 0
+      ? { id, status: "inactive", percent: 0, resetsAt: null }
+      : { id, status: "unavailable" };
+  }
+  if (!validReset(value.resets_at)) return { id, status: "unavailable" };
   return {
     id,
     status: "available",
