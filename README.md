@@ -1,10 +1,5 @@
 # t3-profile
 
-> [!IMPORTANT]
-> Fully quit T3 Code before adding, removing, or syncing profiles. Also stop any
-> `t3 serve` and `t3 connect` processes. T3 writes `settings.json` when it quits
-> and can overwrite changes made while it is running.
-
 `t3-profile` lets you use multiple Claude and Codex subscriptions in T3 Code at
 the same time. Each profile has its own authentication while optionally sharing
 your existing configuration.
@@ -101,7 +96,7 @@ stays in place.
 --isolated     Create a profile without shared resources
 --skip-auth    Add the profile without starting authentication
 --dry-run      Preview what sync would change
---yes          Accept confirmations and assert that T3 is stopped
+--yes          Accept the command's confirmations
 ```
 
 `sync` checks every registered profile. Use `t3-profile sync --dry-run` to

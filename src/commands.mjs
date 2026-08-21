@@ -239,11 +239,9 @@ async function prompt(question, defaultValue = false, { nonInteractiveDefault = 
   }
 }
 
-const STOPPED_T3_PROMPT = "T3 is fully stopped and ready to update? [y/N] ";
-
-async function confirmStoppedT3(yes) {
+async function confirmProceed(question, yes) {
   if (yes) return;
-  const confirmed = await prompt(STOPPED_T3_PROMPT, false);
+  const confirmed = await prompt(question, true);
   if (!confirmed) throw new CancelledError();
 }
 
@@ -402,14 +400,14 @@ async function finalizeAdd(intent) {
   const managedRoot = await resolveManagedRoot();
   if (!isSamePath(managedRoot, intent.managedRoot)) {
     throw error(
-      "The managed root changed while waiting for T3 to stop.",
+      "The managed root changed while waiting for add.",
       "Rerun add to review the new state.",
     );
   }
   const sourceHome = await requireDirectory(intent.sourceInput, "Primary home");
   if (!isSamePath(sourceHome, intent.sourceHome)) {
     throw error(
-      "The primary home changed while waiting for T3 to stop.",
+      "The primary home changed while waiting for add.",
       "Rerun add to review the new state.",
     );
   }
@@ -452,7 +450,7 @@ async function finalizeAdd(intent) {
   };
   if (!isDeepStrictEqual(currentSnapshot, intent.summarySnapshot)) {
     throw error(
-      "Inputs changed while waiting for T3 to stop.",
+      "Inputs changed while waiting for add.",
       "Rerun add to review the new state.",
     );
   }
@@ -486,7 +484,7 @@ async function finalizeAdd(intent) {
   };
 }
 
-async function confirmStopped(prepared) {
+async function confirmAdd(prepared) {
   printAddSummary({
     providerTitle: providerTitle(prepared.provider),
     name: prepared.name,
@@ -498,7 +496,7 @@ async function confirmStopped(prepared) {
     primaryValues: prepared.primaryValues,
     t3SettingsPath: displayPath(prepared.paths.settingsPath),
   });
-  await confirmStoppedT3(prepared.yes);
+  await confirmProceed("Proceed? [Y/n] ", prepared.yes);
 }
 
 async function ensureDirectoryChain(target, onCreate) {
@@ -567,7 +565,7 @@ function rollbackError(cause, failures, backupPath) {
   if (backupPath) details.push(`settings backup: '${backupPath}'`);
   return error(
     `Add failed: ${cause instanceof Error ? cause.message : String(cause)} Rollback incomplete: ${details.join("; ")}.`,
-    "Leave T3 stopped, restore the listed files, then retry.",
+    "Restore the listed files, then retry.",
   );
 }
 
@@ -738,7 +736,7 @@ async function mutateAdd(prepared) {
 
 async function addCommand(options) {
   const intent = await prepareAdd(options);
-  await confirmStopped(intent);
+  await confirmAdd(intent);
   const prepared = await finalizeAdd(intent);
   await mutateAdd(prepared);
   printCreated({
@@ -1012,11 +1010,11 @@ async function syncCommand(options) {
   const plan = buildSyncPlan(settings.value, registry.profiles);
   printSyncSummary(plan.changes, options.dryRun);
   if (plan.changes.length === 0 || options.dryRun) return;
-  await confirmStoppedT3(options.yes);
+  await confirmProceed("Apply these changes? [Y/n] ", options.yes);
 
   const finalManagedRoot = await resolveManagedRoot();
   if (!isSamePath(finalManagedRoot, managedRoot)) {
-    throw error("The managed root changed while waiting for T3 to stop.", "Rerun sync to review the new state.");
+    throw error("The managed root changed while waiting for sync.", "Rerun sync to review the new state.");
   }
   const finalRegistryPath = path.join(finalManagedRoot, "profiles.json");
   const current = await readSettingsDocument(settingsPath);
@@ -1082,7 +1080,7 @@ async function writeRemovedControlFiles({ managedRoot, settings, registry, nextS
     const writtenSettings = await readSettingsDocument(settingsPath);
     const writtenRegistry = await readRegistry(registryPath);
     if (!isDeepStrictEqual(writtenSettings.value, nextSettings) || !isDeepStrictEqual(writtenRegistry.profiles, nextProfiles)) {
-      throw error("Remove verification failed.", "Leave T3 stopped and restore the control files.");
+      throw error("Remove verification failed.", "Restore the control files.");
     }
     return mutation.backupPath;
   } catch (cause) {
@@ -1116,7 +1114,7 @@ async function writeRemovedControlFiles({ managedRoot, settings, registry, nextS
     if (failures.length > 0) {
       throw error(
         `Remove failed and rollback was incomplete: ${failures.join("; ")}.`,
-        `Leave T3 stopped and restore '${mutation.backupPath ?? settingsPath}'.`,
+        `Restore '${mutation.backupPath ?? settingsPath}'.`,
       );
     }
     throw cause;
@@ -1142,13 +1140,13 @@ async function validateRemovalHolding({ holdingPath, chain, expectedIdentity }) 
   if (!stats || isRedirectedStats(stats) || !stats.isDirectory()) {
     throw error(
       `Removal holding path '${holdingPath}' is missing or invalid.`,
-      `Leave T3 stopped and inspect '${holdingPath}' manually.`,
+      `Inspect '${holdingPath}' manually.`,
     );
   }
   if (!sameFilesystemIdentity(filesystemIdentity(stats), expectedIdentity)) {
     throw error(
       `Removal holding path '${holdingPath}' changed unexpectedly.`,
-      `Leave T3 stopped and inspect '${holdingPath}' manually.`,
+      `Inspect '${holdingPath}' manually.`,
     );
   }
   let canonical;
@@ -1157,14 +1155,14 @@ async function validateRemovalHolding({ holdingPath, chain, expectedIdentity }) 
   } catch {
     throw error(
       `Cannot resolve removal holding path '${holdingPath}'.`,
-      `Leave T3 stopped and inspect '${holdingPath}' manually.`,
+      `Inspect '${holdingPath}' manually.`,
     );
   }
   if (!isSamePath(path.dirname(canonical), chain.providerParent.canonical) ||
       !isPathWithin(chain.managedRoot.canonical, canonical)) {
     throw error(
       `Removal holding path '${holdingPath}' resolves outside the managed profile.`,
-      `Leave T3 stopped and inspect '${holdingPath}' manually.`,
+      `Inspect '${holdingPath}' manually.`,
     );
   }
   return stats;
@@ -1179,13 +1177,13 @@ async function restoreRemovedHome({ profileHome, holdingPath, chain, expectedIde
   if (!sameRemovalParentIdentity(removalParentIdentity(chain), removalParentIdentity(currentChain))) {
     throw error(
       `The managed profile parent changed; the profile home remains at '${holdingPath}'.`,
-      "Leave T3 stopped and restore the retained directory manually.",
+      "Restore the retained directory manually.",
     );
   }
   if (currentChain.profileHome.stats) {
     throw error(
       `The original profile path '${profileHome}' is no longer empty; the profile home remains at '${holdingPath}'.`,
-      "Leave T3 stopped and restore the retained directory manually.",
+      "Restore the retained directory manually.",
     );
   }
   await validateRemovalHolding({ holdingPath, chain: currentChain, expectedIdentity });
@@ -1230,7 +1228,6 @@ async function removeCommand(options) {
     const confirmed = await prompt("Permanently remove this profile? [y/N] ", false);
     if (!confirmed) throw new CancelledError();
   }
-  await confirmStoppedT3(options.yes);
 
   const finalRegistry = await readRegistry(registryPath);
   const finalProfile = findProfile(finalRegistry.profiles, provider, name);
@@ -1284,7 +1281,7 @@ async function removeCommand(options) {
         afterMoveChain.profileHome.stats) {
       throw error(
         `The profile home changed while moving it to '${removingHome}'.`,
-        `Leave T3 stopped and retain '${removingHome}' for manual recovery.`,
+        `Retain '${removingHome}' for manual recovery.`,
       );
     }
     await validateRemovalHolding({
@@ -1313,7 +1310,7 @@ async function removeCommand(options) {
       } catch (restoreCause) {
         throw error(
           `${cause.message} The profile home remains at '${removingHome}': ${restoreCause.message}`,
-          "Leave T3 stopped and restore the listed paths manually.",
+          "Restore the listed paths manually.",
         );
       }
     }

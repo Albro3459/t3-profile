@@ -40,8 +40,8 @@ Options:
   --no-keychain-prompt
                  Keep locked Keychain profiles unavailable without prompting.
   --yes          For add, select standard sharing. For add, sync, or remove,
-                 assert that T3 is stopped and accept the command's other
-                 confirmations. Validation and drift checks still run.
+                 accept the command's confirmations. Validation and drift
+                 checks still run.
   help, --help, -h
                  Show this help.
   version, --version, -v
@@ -50,14 +50,11 @@ Options:
 Confirmation behavior:
   add prompts after the creation/sharing summary and before mutation.
   mutating sync prompts after its deterministic plan and before mutation.
-  remove first asks for destructive consent, then immediately asks whether
-  T3 is stopped before mutation. The stopped-T3 prompt is:
-  T3 is fully stopped and ready to update? [y/N]
+  remove asks for destructive consent before mutation.
   sync --dry-run and synchronized sync no-ops, read-only list, usage, and
-  doctor, and provider-only auth and run do not show the stopped-T3 prompt or
-  require T3 to be stopped. Declining any shown confirmation prevents mutation.
-  Declining remove's destructive consent does not continue to the stopped-T3
-  prompt. Native provider CLIs may still prompt natively.`);
+  doctor, and provider-only auth and run do not ask for
+  confirmation. Declining any shown confirmation prevents mutation. Native
+  provider CLIs may still prompt natively.`);
 }
 
 export function printCancelled() {
@@ -115,7 +112,6 @@ export function printAddSummary({
     writeLine("Credentials are never copied by t3-profile.");
   }
   writeLine("");
-  writeLine("Quit T3 Code and stop every `t3 serve` and `t3 connect` process.");
 }
 
 export function printCreated({ providerTitle, name, profileHome, sharing, skipAuth }) {
@@ -125,9 +121,7 @@ export function printCreated({ providerTitle, name, profileHome, sharing, skipAu
   writeLine(`Sharing: ${sharing === "standard" ? "Standard" : "Isolated"}`);
   writeLine("");
   if (skipAuth) {
-    writeLine("Next:");
-    writeLine(`  1. Run \`t3-profile auth ${providerTitle.toLowerCase()} ${name}\`.`);
-    writeLine("  2. Restart T3 Code after authentication completes.");
+    writeLine(`Next: run \`t3-profile auth ${providerTitle.toLowerCase()} ${name}\`.`);
   } else {
     writeLine("Starting provider authentication...");
   }
@@ -135,7 +129,7 @@ export function printCreated({ providerTitle, name, profileHome, sharing, skipAu
 
 export function printAuthenticated() {
   writeLine("");
-  writeLine("Authentication completed. Restart T3 Code.");
+  writeLine("Authentication completed.");
 }
 
 export function printAuthenticationIncomplete(provider, name) {
@@ -156,7 +150,6 @@ export function printSyncSummary(changes, dryRun) {
 export function printSynced(count, backupPath) {
   writeLine(`Synced ${count} T3 provider instance${count === 1 ? "" : "s"}.`);
   writeLine(`Settings backup: ${backupPath}`);
-  writeLine("Restart T3 Code.");
 }
 
 export function printRemoveSummary({ providerTitle, name, profileHome, instanceId }) {
@@ -168,12 +161,10 @@ export function printRemoveSummary({ providerTitle, name, profileHome, instanceI
   writeLine("The managed profile home, including private files and local history stored there, will be permanently deleted.");
   writeLine("Removal does not perform native logout or token revocation.");
   writeLine("Credentials may remain in macOS Keychain or another provider credential store until you revoke them or log out separately.");
-  writeLine("Quit T3 Code and stop every `t3 serve` and `t3 connect` process.");
 }
 
 export function printRemoved({ providerTitle, name }) {
   writeLine(`Removed ${providerTitle} profile "${name}".`);
-  writeLine("Restart T3 Code.");
 }
 
 export function printDoctor(results) {

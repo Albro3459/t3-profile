@@ -20,21 +20,20 @@ are aliases.
 Names must match `^[a-z][a-z0-9_-]{0,47}$`. Windows reserved names such as
 `con`, `aux`, `com1`, and `lpt1` are rejected.
 
-## T3 shutdown requirement
+## Confirmations
 
-Fully quit T3 Code before `add`, a mutating `sync`, or `remove`. Stop every
-`t3 serve` and `t3 connect` process too. T3 writes its settings when it quits
-and can overwrite changes made while it is running.
-
-These operations ask you to confirm that T3 is stopped. Passing `--yes` makes
-that assertion non-interactively. It also accepts the command's other
-confirmations. Validation and drift checks still run.
+`add`, a mutating `sync`, and `remove` confirm before they write. `add` and
+`sync` prompt after printing their summary or plan. `remove` asks for
+destructive consent. Passing `--yes` accepts those confirmations
+non-interactively. Validation and drift checks still run.
 
 `sync --dry-run`, a sync with no changes, `list`, `usage`, `doctor`, `auth`, and
-`run` do not require T3 to be stopped.
+`run` do not ask for confirmation. `usage` may still ask to unlock a
+locked macOS Keychain; see [List and usage](#list-and-usage).
 
-T3 settings are backed up before changes. Restart T3 Code after `add`, `sync`,
-or `remove` completes.
+T3 Code does not need to be stopped or restarted. It reads `settings.json` while
+running and does not overwrite it on quit, so `add`, `sync`, and `remove` take
+effect in a running T3. T3 settings are backed up before changes.
 
 ## Add
 
@@ -154,7 +153,7 @@ status `24`, and SSH-exposed 8-bit statuses `36` (`-25308`) and `29`
 
 Claude reports five-hour and seven-day usage. Codex reports seven-day usage.
 Reset times use the local timezone and are shown as `8/19 at 11:10 PM`.
-Percentages from 0–33 are green, 34–66 are yellow, and 67–100 are red when
+Percentages from 0-33 are green, 34-66 are yellow, and 67-100 are red when
 color output is enabled. Provider, credential, network, or response errors
 appear as `unavailable` for the affected profile. An inactive Claude session
 shows `0` under `%` and `not started` under `RESETS` because its reset timestamp

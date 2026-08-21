@@ -138,7 +138,7 @@ export async function restoreAtomicIfUnchanged(
   if (!sameFileContents(current, writtenRaw)) {
     throw error(
       `${label} '${filePath}' changed before rollback.`,
-      "Leave T3 stopped and restore the file manually before retrying.",
+      "Restore the file manually before retrying.",
     );
   }
   if (originalRaw === null) {
@@ -146,7 +146,7 @@ export async function restoreAtomicIfUnchanged(
     if (!sameFileContents(beforeRemove, writtenRaw)) {
       throw error(
         `${label} '${filePath}' changed before rollback.`,
-        "Leave T3 stopped and restore the file manually before retrying.",
+        "Restore the file manually before retrying.",
       );
     }
     if (beforeRemove.exists) {
@@ -164,7 +164,7 @@ export async function restoreAtomicIfUnchanged(
     await fs.rm(temporary, { force: true }).catch(() => {});
     throw error(
       `${label} '${filePath}' changed before rollback.`,
-      "Leave T3 stopped and restore the file manually before retrying.",
+      "Restore the file manually before retrying.",
     );
   }
   await replaceStaged(temporary, filePath);
