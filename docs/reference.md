@@ -151,13 +151,14 @@ secret. It recognizes Security statuses `-25308` and `-25315`, macOS process
 status `24`, and SSH-exposed 8-bit statuses `36` (`-25308`) and `29`
 (`-25315`).
 
-Claude reports five-hour and seven-day usage. Codex reports seven-day usage.
+Claude reports five-hour and seven-day usage. Codex reports seven-day usage and
+five-hour usage when the account has that window.
 Reset times use the local timezone and are shown as `8/19 at 11:10 PM`.
 Percentages from 0-33 are green, 34-66 are yellow, and 67-100 are red when
 color output is enabled. Provider, credential, network, or response errors
 appear as `unavailable` for the affected profile. An inactive Claude session
-shows `0` under `%` and `not started` under `RESETS` because its reset timestamp
-is null until the first message starts the session.
+or Codex window shows `0` under `%` and `not started` under `RESETS` because its
+reset timestamp is null until the first message starts the session.
 
 Claude usage comes from Anthropic's OAuth usage endpoint. See
 [Claude usage response schema](claude-usage-schema.md) for the supported fields.

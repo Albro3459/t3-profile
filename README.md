@@ -110,7 +110,8 @@ t3-profile doctor codex work
 
 `list` shows each profile's home and sharing mode. `usage` shows provider,
 profile name, usage, and reset times. Claude shows five-hour and seven-day
-usage. Codex shows seven-day usage. A failed usage check appears as
+usage. Codex shows seven-day usage and five-hour usage when the account has
+that window. A failed usage check appears as
 `unavailable` without hiding the profile.
 
 See the [tested support matrix](docs/support.md) for verified versions and

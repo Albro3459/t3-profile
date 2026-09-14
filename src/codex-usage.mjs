@@ -2,7 +2,13 @@ import { makeEnvironment } from "./providers.mjs";
 import { runBidirectionalJsonRpc } from "./jsonrpc.mjs";
 import { VERSION } from "./version.mjs";
 
+export const CODEX_FIVE_HOUR_WINDOW_MINUTES = 300;
 export const CODEX_WEEKLY_WINDOW_MINUTES = 10_080;
+
+const CODEX_WINDOW_IDS = new Map([
+  [CODEX_FIVE_HOUR_WINDOW_MINUTES, "five_hour"],
+  [CODEX_WEEKLY_WINDOW_MINUTES, "week"],
+]);
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -32,17 +38,23 @@ function validDateFromEpochSeconds(value) {
 }
 
 function normalizeCodexWindow(window) {
-  if (!isObject(window) || window.windowDurationMins !== CODEX_WEEKLY_WINDOW_MINUTES) return null;
+  if (!isObject(window)) return null;
+  const id = CODEX_WINDOW_IDS.get(window.windowDurationMins);
+  if (!id) return null;
   if (typeof window.usedPercent !== "number" ||
       !Number.isFinite(window.usedPercent) ||
       window.usedPercent < 0 ||
       window.usedPercent > 100) {
-    return { invalid: true };
+    return { id, status: "unavailable" };
   }
   const resetsAt = validDateFromEpochSeconds(window.resetsAt);
-  if (!resetsAt) return { invalid: true };
+  if (!resetsAt) {
+    return window.usedPercent === 0 && (window.resetsAt === null || window.resetsAt === undefined)
+      ? { id, status: "inactive", percent: 0, resetsAt: null }
+      : { id, status: "unavailable" };
+  }
   return {
-    id: "week",
+    id,
     status: "available",
     percent: Math.round(window.usedPercent),
     resetsAt: resetsAt.getTime(),
@@ -53,14 +65,18 @@ export function parseCodexUsageResult(result) {
   const bucket = selectCodexRateLimits(result);
   if (!bucket) return unavailableCodexUsage();
 
-  const candidates = [bucket.primary, bucket.secondary]
-    .filter((window) => window !== null && window !== undefined)
-    .filter((window) => isObject(window) && window.windowDurationMins === CODEX_WEEKLY_WINDOW_MINUTES);
-  if (candidates.length !== 1) return unavailableCodexUsage();
+  const windows = [bucket.primary, bucket.secondary]
+    .map(normalizeCodexWindow)
+    .filter(Boolean)
+    .sort((left, right) => (left.id === "week" ? 1 : 0) - (right.id === "week" ? 1 : 0));
+  if (windows.length === 0) return unavailableCodexUsage();
 
-  const normalized = normalizeCodexWindow(candidates[0]);
-  if (!normalized || normalized.invalid) return unavailableCodexUsage();
-  return { windows: [normalized] };
+  const ids = new Set();
+  for (const window of windows) {
+    if (ids.has(window.id)) return unavailableCodexUsage();
+    ids.add(window.id);
+  }
+  return { windows };
 }
 
 export async function inspectCodexUsage({
