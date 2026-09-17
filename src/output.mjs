@@ -25,7 +25,7 @@ Usage:
   t3-profile auth <claude|codex> <name>
   t3-profile run <claude|codex> <name> [-- provider arguments]
   t3-profile list
-  t3-profile usage [--no-keychain-prompt]
+  t3-profile usage [--compact] [--no-keychain-prompt]
   t3-profile sync [--dry-run] [--yes]
   t3-profile doctor [<claude|codex> <name>]
   t3-profile remove <claude|codex> <name> [--yes]
@@ -37,6 +37,7 @@ Options:
   --isolated     Create an independent profile without shared resources.
   --skip-auth    Create the profile without starting provider authentication.
   --dry-run      Show the changes sync would make without writing them.
+  --compact      Show usage without headings or repeated profile fields.
   --no-keychain-prompt
                  Keep locked Keychain profiles unavailable without prompting.
   --yes          For add, select standard sharing. For add, sync, or remove,
@@ -237,7 +238,7 @@ function usageRows(usage, timezone = "UTC") {
   return rows.length > 0 ? rows : [{ interval: "", percent: null, reset: "unavailable" }];
 }
 
-export function printUsage(profiles) {
+export function printUsage(profiles, { compact = false } = {}) {
   if (profiles.length === 0) {
     writeLine("No profiles configured.");
     return;
@@ -249,6 +250,10 @@ export function printUsage(profiles) {
       values: [profile.provider, profile.name],
       usage: usageRows(profile.usage, profile.displayTimezone),
     }));
+  if (compact) {
+    printCompactUsage(rows);
+    return;
+  }
   const headings = ["PROVIDER", "NAME", "WINDOW", "%", "RESETS"];
   const identityWidths = headings.slice(0, 2).map((heading, index) => Math.max(heading.length, ...rows.map((row) => row.values[index].length)));
   const intervalWidth = Math.max("WINDOW".length, ...rows.flatMap((row) => row.usage.map((entry) => entry.interval.length)));
@@ -284,6 +289,24 @@ export function printUsage(profiles) {
   printNarrowUsage(rows, intervalWidth, percentWidth, resetWidth);
 }
 
+function printCompactUsage(rows) {
+  for (let index = 0; index < rows.length; index += 1) {
+    if (index > 0) writeLine("");
+    const row = rows[index];
+    writeLine(`${row.values[1]} (${row.values[0]})`);
+    for (const entry of row.usage) {
+      if (entry.interval === "") {
+        writeLine(`  ${entry.reset}`);
+        continue;
+      }
+      const percent = entry.percent === null
+        ? " ".repeat(4)
+        : `${paintUsagePercent(entry.percent, String(entry.percent).padStart(3))}%`;
+      writeLine(`  ${entry.interval.padEnd(2)}  ${percent}  resets ${entry.reset}`);
+    }
+  }
+}
+
 function centerValue(value, width) {
   const padding = Math.max(0, width - value.length);
   const left = Math.floor(padding / 2);
@@ -292,8 +315,12 @@ function centerValue(value, width) {
 
 function paintPercent(percent, width) {
   if (percent === null) return " ".repeat(width);
+  return paintUsagePercent(percent, centerValue(String(percent), width));
+}
+
+function paintUsagePercent(percent, value) {
   const code = percent <= 33 ? "32" : percent <= 66 ? "33" : "31";
-  return paint(code, centerValue(String(percent), width));
+  return paint(code, value);
 }
 
 function printNarrowUsage(rows, intervalWidth, percentWidth, resetWidth) {

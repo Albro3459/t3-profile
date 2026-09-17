@@ -7,7 +7,7 @@ t3-profile add <claude|codex> <name> [--home <path>] [--isolated] [--skip-auth] 
 t3-profile auth <claude|codex> <name>
 t3-profile run <claude|codex> <name> [-- provider arguments]
 t3-profile list
-t3-profile usage [--no-keychain-prompt]
+t3-profile usage [--compact] [--no-keychain-prompt]
 t3-profile sync [--dry-run] [--yes]
 t3-profile doctor [<claude|codex> <name>]
 t3-profile remove <claude|codex> <name> [--yes]
@@ -135,6 +135,15 @@ file link creation is unavailable, or use `--isolated`.
 
 `list` shows every registered profile, its sharing mode, and managed home.
 `usage` shows provider, profile name, usage, and reset times in a compact table.
+Pass `--compact` to omit the table headings and show each profile once, which is
+suited to narrow terminals and remote sessions:
+
+```text
+personal (claude)
+  5h   12%  resets 9/16 at 10:30 PM
+  7d   48%  resets 9/20 at 8:15 AM
+```
+
 The first usage pass is noninteractive. If unavailable profiles have matching
 Claude credentials in a locked macOS Keychain, an interactive terminal asks
 whether to temporarily unlock it, retries all providers and profiles, and

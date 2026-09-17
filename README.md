@@ -25,6 +25,9 @@ t3-profile list
 # Show only provider usage
 t3-profile usage
 
+# Show usage in a narrow SSH-friendly format
+t3-profile usage --compact
+
 # Re-authenticate an existing profile
 t3-profile auth claude personal
 t3-profile auth codex work
@@ -96,6 +99,7 @@ stays in place.
 --isolated     Create a profile without shared resources
 --skip-auth    Add the profile without starting authentication
 --dry-run      Preview what sync would change
+--compact      Show usage without table headings or repeated profile fields
 --yes          Accept the command's confirmations
 ```
 

@@ -106,12 +106,14 @@ export function parseArguments(argv) {
     return { command };
   }
   if (command === "usage") {
+    let compact = false;
     let noKeychainPrompt = false;
     for (const value of rest) {
-      if (value === "--no-keychain-prompt") noKeychainPrompt = true;
+      if (value === "--compact") compact = true;
+      else if (value === "--no-keychain-prompt") noKeychainPrompt = true;
       else throw error(`Unknown option '${value}'.`, "Use 't3-profile help' for usage.");
     }
-    return { command, noKeychainPrompt };
+    return { command, compact, noKeychainPrompt };
   }
   if (command === "doctor") {
     if (rest.length !== 0 && rest.length !== 2) {
@@ -804,13 +806,13 @@ async function listCommand() {
   })));
 }
 
-async function usageCommand({ noKeychainPrompt = false } = {}) {
+async function usageCommand({ compact = false, noKeychainPrompt = false } = {}) {
   const firstPass = await profilesWithUsage({ withKeychainDiagnostics: true });
   const lockedCount = noKeychainPrompt || firstPass.lockedProfiles.length === 0
     ? 0
     : await countLockedUsageProfiles(firstPass.profiles, firstPass.managedRoot, firstPass.keychainPath);
   if (noKeychainPrompt || lockedCount === 0 || !firstPass.keychainPath) {
-    printUsage(firstPass.profiles);
+    printUsage(firstPass.profiles, { compact });
     return;
   }
 
@@ -825,7 +827,7 @@ async function usageCommand({ noKeychainPrompt = false } = {}) {
     confirmed = false;
   }
   if (!confirmed) {
-    printUsage(firstPass.profiles);
+    printUsage(firstPass.profiles, { compact });
     return;
   }
 
@@ -836,7 +838,7 @@ async function usageCommand({ noKeychainPrompt = false } = {}) {
   );
   if (lockedAfterConfirmation === 0) {
     const retried = await profilesWithUsage({ keychainPath: firstPass.keychainPath });
-    printUsage(retried.profiles);
+    printUsage(retried.profiles, { compact });
     return;
   }
 
@@ -844,13 +846,13 @@ async function usageCommand({ noKeychainPrompt = false } = {}) {
   const unlocked = await unlockKeychain({ keychainPath: firstPass.keychainPath });
   if (!unlocked) {
     retrySignals.restore();
-    printUsage(firstPass.profiles);
+    printUsage(firstPass.profiles, { compact });
     return;
   }
   let exitCode = 0;
   try {
     const retried = await profilesWithUsage({ keychainPath: firstPass.keychainPath });
-    printUsage(retried.profiles);
+    printUsage(retried.profiles, { compact });
   } finally {
     let relocked = false;
     try {
